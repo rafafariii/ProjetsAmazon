@@ -108,10 +108,32 @@ const DEMO_DATA = {
     { id: 'sp4', nome: 'Sprint 4', data_inicio: '2026-04-13', data_fim: '2026-04-24', status: 'futura'    },
   ],
   Equipe: [
-    { id: 'm1', nome: 'Ana Souza',      avatar_url: '', horas_ferias: 8,  horas_projeto: 60, horas_colab: 22 },
-    { id: 'm2', nome: 'Carlos Lima',    avatar_url: '', horas_ferias: 0,  horas_projeto: 72, horas_colab: 18 },
-    { id: 'm3', nome: 'Juliana Mendes', avatar_url: '', horas_ferias: 16, horas_projeto: 52, horas_colab: 22 },
-    { id: 'm4', nome: 'Pedro Costa',    avatar_url: '', horas_ferias: 0,  horas_projeto: 70, horas_colab: 20 },
+    { id: 'm1', nome: 'Ana Souza',      avatar_url: '' },
+    { id: 'm2', nome: 'Carlos Lima',    avatar_url: '' },
+    { id: 'm3', nome: 'Juliana Mendes', avatar_url: '' },
+    { id: 'm4', nome: 'Pedro Costa',    avatar_url: '' },
+  ],
+  Capacidade_Config: [
+    // Ana Souza
+    { membro_id: 'm1', sprint_id: 'sp1', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm1', sprint_id: 'sp2', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm1', sprint_id: 'sp3', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm1', sprint_id: 'sp4', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    // Carlos Lima
+    { membro_id: 'm2', sprint_id: 'sp1', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm2', sprint_id: 'sp2', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm2', sprint_id: 'sp3', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm2', sprint_id: 'sp4', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    // Juliana Mendes
+    { membro_id: 'm3', sprint_id: 'sp1', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm3', sprint_id: 'sp2', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm3', sprint_id: 'sp3', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm3', sprint_id: 'sp4', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    // Pedro Costa
+    { membro_id: 'm4', sprint_id: 'sp1', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm4', sprint_id: 'sp2', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm4', sprint_id: 'sp3', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
+    { membro_id: 'm4', sprint_id: 'sp4', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
   ],
   Projetos: [
     { id: 'p1', nome: 'Portal do Cliente', cor: '#6366f1', data_inicio: '2026-03-16', data_fim: '2026-04-10' },
@@ -119,17 +141,18 @@ const DEMO_DATA = {
     { id: 'p3', nome: 'App Mobile',        cor: '#ec4899', data_inicio: '2026-04-06', data_fim: '2026-04-24' },
   ],
   Historias: [
-    { id: 's1',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm1', titulo: 'Tela de Login OAuth',      descricao: 'Autenticação Google/Microsoft via NextAuth.js.',         estimativa: 16   },
-    { id: 's2',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Dashboard principal',      descricao: 'KPIs: usuários ativos, conversão e receita.',            estimativa: 24   },
-    { id: 's3',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Perfil do usuário',        descricao: 'Edição de perfil com upload para S3.',                   estimativa: 12   },
-    { id: 's4',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm4', titulo: 'Configurações da conta',   descricao: 'Notificações, segurança e integrações.',                  estimativa: 10   },
-    { id: 's5',  projeto_id: 'p2', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Integração Stripe',        descricao: 'SDK Stripe para pagamentos recorrentes.',                 estimativa: 20   },
-    { id: 's6',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm1', titulo: 'Webhooks de notificação',  descricao: '',                                                       estimativa: null },
-    { id: 's7',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Relatório de transações',  descricao: '',                                                       estimativa: null },
-    { id: 's8',  projeto_id: 'p2', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Estorno e reembolso',      descricao: '',                                                       estimativa: null },
-    { id: 's9',  projeto_id: 'p3', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Setup React Native + CI',  descricao: '',                                                       estimativa: null },
-    { id: 's10', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm4', titulo: 'Tela de Onboarding',       descricao: '',                                                       estimativa: null },
-    { id: 's11', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm2', titulo: 'Push Notifications',       descricao: '',                                                       estimativa: null },
+    { id: 's1',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm1', titulo: 'Tela de Login OAuth',      descricao: 'Autenticação Google/Microsoft via NextAuth.js.',         estimativa: 16,   tipo: 'historia' },
+    { id: 's2',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Dashboard principal',      descricao: 'KPIs: usuários ativos, conversão e receita.',            estimativa: 24,   tipo: 'historia' },
+    { id: 's3',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Perfil do usuário',        descricao: 'Edição de perfil com upload para S3.',                   estimativa: 12,   tipo: 'historia' },
+    { id: 's4',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm4', titulo: 'Configurações da conta',   descricao: 'Notificações, segurança e integrações.',                  estimativa: 10,   tipo: 'historia' },
+    { id: 's5',  projeto_id: 'p2', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Integração Stripe',        descricao: 'SDK Stripe para pagamentos recorrentes.',                 estimativa: 20,   tipo: 'historia' },
+    { id: 's6',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm1', titulo: 'Webhooks de notificação',  descricao: '',                                                       estimativa: null, tipo: 'task'     },
+    { id: 's7',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Relatório de transações',  descricao: '',                                                       estimativa: null, tipo: 'historia' },
+    { id: 's8',  projeto_id: 'p2', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Estorno e reembolso',      descricao: '',                                                       estimativa: null, tipo: 'historia' },
+    { id: 's9',  projeto_id: 'p3', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Setup React Native + CI',  descricao: '',                                                       estimativa: null, tipo: 'task'     },
+    { id: 's10', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm4', titulo: 'Tela de Onboarding',       descricao: '',                                                       estimativa: null, tipo: 'historia' },
+    { id: 's11', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm2', titulo: 'Push Notifications',       descricao: '',                                                       estimativa: null, tipo: 'historia' },
+    { id: 's12', projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm1', titulo: 'Fix: Crash ao salvar perfil',  descricao: 'Erro de null reference ao salvar sem avatar.',       estimativa: 4,    tipo: 'bug'      },
   ],
   OKRs: [
     { id: 'okr1', tipo: 'KR',  frente: 'modernizacao',   titulo: 'Migração para arquitetura cloud-native',   projeto_id: 'p1', baseline: 0,  moonshot: 80,  roofshot: 100, atual: 35,  unidade: '%',   descricao: 'Percentual de serviços migrados para arquitetura cloud-native' },
@@ -137,6 +160,18 @@ const DEMO_DATA = {
     { id: 'okr3', tipo: 'KR',  frente: 'eficiencia',     titulo: 'Redução do tempo de deploy (minutos)',     projeto_id: 'p2', baseline: 45, moonshot: 15,  roofshot: 10,  atual: 28,  unidade: 'min', lower_is_better: 1, descricao: 'Tempo médio de deploy em produção — quanto menor, melhor' },
     { id: 'okr4', tipo: 'KPI', frente: 'dados_analytics', titulo: 'Cobertura de dados no Data Warehouse',  projeto_id: 'p2', baseline: 60, moonshot: 85,  roofshot: 95,  atual: 70,  unidade: '%',   lower_is_better: 0, descricao: 'Percentual de domínios de negócio com dados no DW' },
     { id: 'okr5', tipo: 'KR',  frente: 'atendimento',    titulo: 'Tempo médio de resposta ao cliente (min)', projeto_id: 'p3', baseline: 8,  moonshot: 3,   roofshot: 2,   atual: 5.5, unidade: 'min', lower_is_better: 1, descricao: 'Tempo médio de primeira resposta ao cliente — quanto menor, melhor' },
+  ],
+  Config_Feriados: [
+    { data: '2026-04-03' },
+    { data: '2026-04-21' },
+  ],
+  Equipe_Ferias: [
+    { membro_id: 'm1', data_inicio: '2026-03-02', data_fim: '2026-03-03' },
+    { membro_id: 'm3', data_inicio: '2026-03-16', data_fim: '2026-03-19' },
+  ],
+  Ausencias: [
+    { membro_id: 'm2', data: '2026-03-20', tipo: 'day_off'      },
+    { membro_id: 'm4', data: '2026-04-06', tipo: 'treinamento'  },
   ],
 };
 
@@ -180,11 +215,15 @@ ipcMain.handle('load-data', async (_event, filePath) => {
     }
     const workbook = XLSX.readFile(filePath);
     return {
-      sprints:   readSheet(workbook, 'Sprints'),
-      equipe:    readSheet(workbook, 'Equipe'),
-      projetos:  readSheet(workbook, 'Projetos'),
-      historias: readSheet(workbook, 'Historias'),
-      okrs:      readSheet(workbook, 'OKRs'),
+      sprints:           readSheet(workbook, 'Sprints'),
+      equipe:            readSheet(workbook, 'Equipe'),
+      projetos:          readSheet(workbook, 'Projetos'),
+      historias:         readSheet(workbook, 'Historias'),
+      okrs:              readSheet(workbook, 'OKRs'),
+      feriados:          readSheet(workbook, 'Config_Feriados'),
+      ferias:            readSheet(workbook, 'Equipe_Ferias'),
+      ausencias:         readSheet(workbook, 'Ausencias'),
+      capacidade_config: readSheet(workbook, 'Capacidade_Config'),
     };
   } catch (err) {
     return { error: err.message };
@@ -247,11 +286,15 @@ ipcMain.handle('create-template', async (_event, filePath, withDemo) => {
     const workbook = XLSX.utils.book_new();
 
     const SCHEMAS = {
-      Sprints:   withDemo ? DEMO_DATA.Sprints   : [{ id: '', nome: '', data_inicio: '', data_fim: '', status: '' }],
-      Equipe:    withDemo ? DEMO_DATA.Equipe    : [{ id: '', nome: '', avatar_url: '', horas_ferias: 0, horas_projeto: 70, horas_colab: 20 }],
-      Projetos:  withDemo ? DEMO_DATA.Projetos  : [{ id: '', nome: '', cor: '#6366f1', data_inicio: '', data_fim: '' }],
-      Historias: withDemo ? DEMO_DATA.Historias : [{ id: '', projeto_id: '', sprint_id: '', responsavel_id: '', titulo: '', descricao: '', estimativa: null }],
-      OKRs:      withDemo ? DEMO_DATA.OKRs      : [{ id: '', tipo: 'KR', frente: '', titulo: '', projeto_id: '', baseline: 0, moonshot: 0, roofshot: 0, atual: 0, unidade: '%', descricao: '' }],
+      Sprints:           withDemo ? DEMO_DATA.Sprints           : [{ id: '', nome: '', data_inicio: '', data_fim: '', status: '' }],
+      Equipe:            withDemo ? DEMO_DATA.Equipe            : [{ id: '', nome: '', avatar_url: '' }],
+      Projetos:          withDemo ? DEMO_DATA.Projetos          : [{ id: '', nome: '', cor: '#6366f1', data_inicio: '', data_fim: '' }],
+      Historias:         withDemo ? DEMO_DATA.Historias         : [{ id: '', projeto_id: '', sprint_id: '', responsavel_id: '', titulo: '', descricao: '', estimativa: null, tipo: 'historia' }],
+      OKRs:              withDemo ? DEMO_DATA.OKRs              : [{ id: '', tipo: 'KR', frente: '', titulo: '', projeto_id: '', baseline: 0, moonshot: 0, roofshot: 0, atual: 0, unidade: '%', descricao: '' }],
+      Config_Feriados:   withDemo ? DEMO_DATA.Config_Feriados   : [{ data: '' }],
+      Equipe_Ferias:     withDemo ? DEMO_DATA.Equipe_Ferias     : [{ membro_id: '', data_inicio: '', data_fim: '' }],
+      Ausencias:         withDemo ? DEMO_DATA.Ausencias         : [{ membro_id: '', data: '', tipo: '' }],
+      Capacidade_Config: withDemo ? DEMO_DATA.Capacidade_Config : [{ membro_id: '', sprint_id: '', horas_projeto_dia: 6, horas_cerimonias_dia: 2 }],
     };
 
     for (const [name, data] of Object.entries(SCHEMAS)) {

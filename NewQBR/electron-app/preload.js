@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /**
    * Lê todas as abas do arquivo Excel e retorna os dados brutos.
    * @param {string} filePath
-   * @returns {Promise<{sprints, equipe, projetos, historias}|{error}>}
+   * @returns {Promise<{sprints, equipe, projetos, historias, okrs, feriados, ferias, ausencias}|{error}>}
    */
   loadData: (filePath) => ipcRenderer.invoke('load-data', filePath),
 
@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * Salva uma aba específica do workbook.
    * Preserva as demais abas.
    * @param {string} filePath
-   * @param {'Sprints'|'Equipe'|'Projetos'|'Historias'} sheetName
+   * @param {string} sheetName
    * @param {object[]} data — array de objetos (linhas da planilha)
    * @returns {Promise<{success: true}|{error}>}
    */

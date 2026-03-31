@@ -18,7 +18,8 @@ import {
   BarChart3, Zap, TrendingUp, CheckSquare, FolderOpen, FilePlus2,
   Save, Database, RefreshCw, HardDrive, Upload, UserCircle,
   Target, ArrowRight, Repeat2, MoveRight, Star, Cpu, Smile,
-  Activity, PieChart, Headphones, BookOpen, ChevronRight
+  Activity, PieChart, Headphones, BookOpen, ChevronRight,
+  Settings2, TreePine, CalendarX2, LogOut
 } from "lucide-react";
 
 // ═══════════════════════════════════════════════════════════════
@@ -29,7 +30,7 @@ const api = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
   : {
       selectFile:     async ()             => null,
-      loadData:       async ()             => ({ sprints: [], equipe: [], projetos: [], historias: [], error: 'Rodando sem Electron – modo demo' }),
+      loadData:       async ()             => ({ sprints: [], equipe: [], projetos: [], historias: [], okrs: [], feriados: [], ferias: [], ausencias: [], error: 'Rodando sem Electron – modo demo' }),
       saveSheet:      async ()             => ({ success: true }),
       createTemplate: async ()             => ({ success: true }),
       selectAvatar:   async ()             => null,
@@ -74,6 +75,86 @@ const SPRINT_STYLES = {
   futura:    { badge: 'bg-violet-100 text-violet-600', dot: 'bg-violet-400',  row: 'bg-violet-50/40 border-violet-200'  },
 };
 
+const FRENTES = ['Engenharia', 'Produto', 'Design', 'Marketing', 'Suporte'];
+
+const ITEM_TYPE_STYLES = {
+  historia: { label: 'História', badge: 'bg-indigo-100 text-indigo-700', dot: 'bg-indigo-500' },
+  task:     { label: 'Task',     badge: 'bg-amber-100 text-amber-700',   dot: 'bg-amber-500'  },
+  bug:      { label: 'Bug',      badge: 'bg-red-100 text-red-600',       dot: 'bg-red-500'    },
+};
+
+// ═══════════════════════════════════════════════════════════════
+// BUSINESS DAY CALCULATIONS
+// ═══════════════════════════════════════════════════════════════
+function getBusinessDays(startDate, endDate, holidays = []) {
+  const start = new Date(startDate + 'T00:00:00');
+  const end = new Date(endDate + 'T00:00:00');
+  const holidaySet = new Set(holidays.map(h => h.date));
+  let count = 0;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const day = d.getDay();
+    const dateStr = d.toISOString().slice(0, 10);
+    if (day !== 0 && day !== 6 && !holidaySet.has(dateStr)) count++;
+  }
+  return count;
+}
+
+function getMemberVacationDaysInSprint(memberId, sprintStart, sprintEnd, vacations) {
+  const start = new Date(sprintStart + 'T00:00:00');
+  const end = new Date(sprintEnd + 'T00:00:00');
+  let count = 0;
+  vacations.filter(v => v.memberId === memberId).forEach(v => {
+    const vStart = new Date(v.startDate + 'T00:00:00');
+    const vEnd = new Date(v.endDate + 'T00:00:00');
+    const overlapStart = vStart > start ? vStart : start;
+    const overlapEnd = vEnd < end ? vEnd : end;
+    for (let d = new Date(overlapStart); d <= overlapEnd; d.setDate(d.getDate() + 1)) {
+      const day = d.getDay();
+      if (day !== 0 && day !== 6) count++;
+    }
+  });
+  return count;
+}
+
+function getMemberAbsenceDaysInSprint(memberId, sprintStart, sprintEnd, absences) {
+  const start = new Date(sprintStart + 'T00:00:00');
+  const end = new Date(sprintEnd + 'T00:00:00');
+  return absences.filter(a => {
+    if (a.memberId !== memberId) return false;
+    const d = new Date(a.date + 'T00:00:00');
+    return d >= start && d <= end;
+  }).length;
+}
+
+/**
+ * Retorna a capacidade detalhada de um membro em uma sprint.
+ * capacityConfigs: array de { id, memberId, sprintId, projectPerDay, ceremoniesPerDay }
+ */
+function getMemberSprintCapacity(memberId, sprint, capacityConfigs, holidays, vacations, absences) {
+  if (!sprint?.startDate || !sprint?.endDate) {
+    return { bizDays: 0, vacDays: 0, absDays: 0, availDays: 0, projectHours: 0, ceremoniesHours: 0, projectPerDay: 6, ceremoniesPerDay: 2 };
+  }
+  const cfg = capacityConfigs.find(c => c.memberId === memberId && c.sprintId === sprint.id);
+  const projectPerDay    = cfg?.projectPerDay    ?? 6;
+  const ceremoniesPerDay = cfg?.ceremoniesPerDay ?? 2;
+
+  const bizDays   = getBusinessDays(sprint.startDate, sprint.endDate, holidays);
+  const vacDays   = getMemberVacationDaysInSprint(memberId, sprint.startDate, sprint.endDate, vacations);
+  const absDays   = getMemberAbsenceDaysInSprint(memberId, sprint.startDate, sprint.endDate, absences);
+  const availDays = Math.max(0, bizDays - vacDays - absDays);
+
+  return {
+    bizDays,
+    vacDays,
+    absDays,
+    availDays,
+    projectHours:    availDays * projectPerDay,
+    ceremoniesHours: availDays * ceremoniesPerDay,
+    projectPerDay,
+    ceremoniesPerDay,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // TRANSFORMAÇÕES EXCEL ↔ APP STATE
 // ═══════════════════════════════════════════════════════════════
@@ -94,11 +175,15 @@ const fromExcel = {
       id:        String(r.id),
       name:      r.nome       || '',
       avatarUrl: r.avatar_url || '',
-      hours: {
-        vacation:   Number(r.horas_ferias  ?? 0),
-        project:    Number(r.horas_projeto ?? 70),
-        ceremonies: Number(r.horas_colab   ?? 20),
-      },
+    })),
+
+  capacityConfigs: (rows = []) =>
+    rows.filter(r => r.membro_id && r.sprint_id).map(r => ({
+      id:             uid(),
+      memberId:       String(r.membro_id),
+      sprintId:       String(r.sprint_id),
+      projectPerDay:    Number(r.horas_projeto_dia    ?? 6),
+      ceremoniesPerDay: Number(r.horas_cerimonias_dia ?? 2),
     })),
 
   projects: (projRows = [], storyRows = []) =>
@@ -117,6 +202,7 @@ const fromExcel = {
           hours:       s.estimativa     ? Number(s.estimativa)     : null,
           description: s.descricao      || '',
           sprintId:    s.sprint_id      ? String(s.sprint_id)      : '',
+          type:        s.tipo           || 'historia',
         })),
     })),
 
@@ -135,6 +221,19 @@ const fromExcel = {
       description: r.descricao || '',
       lowerIsBetter: r.lower_is_better ? true : false,
     })),
+
+  holidays: (rows = []) =>
+    rows.filter(r => r.data).map(r => ({ id: uid(), date: r.data })),
+
+  vacations: (rows = []) =>
+    rows.filter(r => r.membro_id).map(r => ({
+      id: uid(), memberId: String(r.membro_id), startDate: r.data_inicio || '', endDate: r.data_fim || ''
+    })),
+
+  absences: (rows = []) =>
+    rows.filter(r => r.membro_id).map(r => ({
+      id: uid(), memberId: String(r.membro_id), date: r.data || '', type: r.tipo || 'day_off'
+    })),
 };
 
 /** App state → Excel rows */
@@ -148,12 +247,16 @@ const toExcel = {
   })),
 
   members: (members) => members.map((m) => ({
-    id:            m.id,
-    nome:          m.name,
-    avatar_url:    m.avatarUrl || '',
-    horas_ferias:  m.hours.vacation,
-    horas_projeto: m.hours.project,
-    horas_colab:   m.hours.ceremonies,
+    id:         m.id,
+    nome:       m.name,
+    avatar_url: m.avatarUrl || '',
+  })),
+
+  capacityConfigs: (configs) => configs.map(c => ({
+    membro_id:          c.memberId,
+    sprint_id:          c.sprintId,
+    horas_projeto_dia:    c.projectPerDay,
+    horas_cerimonias_dia: c.ceremoniesPerDay,
   })),
 
   projects: (projects) => projects.map((p) => ({
@@ -174,6 +277,7 @@ const toExcel = {
         titulo:         s.title,
         descricao:      s.description  || '',
         estimativa:     s.hours        ?? null,
+        tipo:           s.type         || 'historia',
       }))
     ),
 
@@ -191,6 +295,12 @@ const toExcel = {
     descricao:        o.description || '',
     lower_is_better:  o.lowerIsBetter ? 1 : 0,
   })),
+
+  holidays: (holidays) => holidays.map(h => ({ data: h.date })),
+
+  vacations: (vacations) => vacations.map(v => ({ membro_id: v.memberId, data_inicio: v.startDate, data_fim: v.endDate })),
+
+  absences: (absences) => absences.map(a => ({ membro_id: a.memberId, data: a.date, tipo: a.type })),
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -201,7 +311,6 @@ function Avatar({ name, avatarUrl, size = 36, ring = false }) {
   const initials = name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   const bg = avatarBg(name);
 
-  // Converte caminho absoluto do sistema para URL file://
   const showImg = avatarUrl && !imgError;
   const src = showImg
     ? (avatarUrl.startsWith('file://') ? avatarUrl : `file://${avatarUrl.replace(/\\/g, '/')}`)
@@ -340,7 +449,6 @@ function GanttTimeline({ projects, members, sprints }) {
         <span className="text-xs text-gray-400 ml-1">— Gantt com alocação de membros</span>
       </div>
       <div className="p-6">
-        {/* Sprint bands header */}
         <div className="flex items-center mb-2">
           <div className="w-44 shrink-0" />
           <div className="flex-1 relative h-8">
@@ -355,7 +463,6 @@ function GanttTimeline({ projects, members, sprints }) {
             })}
           </div>
         </div>
-        {/* Date labels */}
         <div className="flex items-center mb-4">
           <div className="w-44 shrink-0" />
           <div className="flex-1 relative h-5">
@@ -365,7 +472,6 @@ function GanttTimeline({ projects, members, sprints }) {
             <div className="absolute text-xs text-gray-400 right-0">{fmtDate(validSprints[validSprints.length - 1]?.endDate)}</div>
           </div>
         </div>
-        {/* Project bars */}
         <div className="flex items-stretch">
           <div className="w-44 shrink-0" />
           <div className="flex-1 relative">
@@ -396,14 +502,10 @@ function GanttTimeline({ projects, members, sprints }) {
             </div>
           </div>
         </div>
-        {/* Legend */}
         <div className="flex flex-wrap items-center gap-4 mt-5 pt-4 border-t border-gray-100 text-xs text-gray-500">
-          <span className="font-medium">Risco DoR:</span>
-          {[['#22c55e','DoR Completo'],['#f59e0b','Risco Médio'],['#ef4444','Alto Risco']].map(([c,l]) => (
-            <span key={l} className="flex items-center gap-1.5 text-gray-600">
-              <span className="w-3 h-3 rounded-sm border-2" style={{ borderColor: c }} />{l}
-            </span>
-          ))}
+          <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} /> DoR Completo</div>
+          <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#f59e0b' }} /> Risco Médio</div>
+          <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#ef4444' }} /> Alto Risco</div>
         </div>
       </div>
     </div>
@@ -411,19 +513,37 @@ function GanttTimeline({ projects, members, sprints }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// VIEWS (Dashboard, Sprints, Team, Projects)
-// — Idênticas ao ControleDeJornada.jsx, sem alteração de lógica —
+// DASHBOARD VIEW
 // ═══════════════════════════════════════════════════════════════
+function DashboardView({ sprints, members, projects, holidays, vacations, absences, capacityConfigs }) {
+  const currentSprint    = sprints.find(s => s.status === 'atual');
+  const totalStories     = projects.reduce((sum, p) => sum + p.stories.length, 0);
+  const completedStories = projects.reduce((sum, p) => sum + p.stories.filter(s => s.hours).length, 0);
 
-function DashboardView({ sprints, members, projects }) {
-  const totalProjectHours = members.reduce((a, m) => a + m.hours.project, 0);
-  const totalAssigned = useMemo(() => projects.reduce((a, p) => a + p.stories.reduce((b, s) => b + (s.hours ?? 0), 0), 0), [projects]);
-  const totalStories  = projects.reduce((a, p) => a + p.stories.length, 0);
-  const dorStories    = projects.reduce((a, p) => a + p.stories.filter((s) => s.hours).length, 0);
-  const riskCount = { green: 0, yellow: 0, red: 0, none: 0 };
-  projects.forEach((p) => riskCount[dorRisk(p)]++);
-  const currentSprint = sprints.find((s) => s.status === 'atual');
-  const closedSprints = sprints.filter((s) => s.status === 'encerrada').length;
+  const memberCapacity = useMemo(() => {
+    if (!currentSprint?.startDate || !currentSprint?.endDate) return [];
+    return members.map(m => {
+      const cap = getMemberSprintCapacity(m.id, currentSprint, capacityConfigs, holidays, vacations, absences);
+      const assigned = projects.reduce((sum, p) =>
+        sum + p.stories
+          .filter(s => s.assignee === m.id && s.sprintId === currentSprint.id && s.hours)
+          .reduce((b, s) => b + s.hours, 0), 0);
+      return {
+        memberId:  m.id,
+        name:      m.name,
+        avatarUrl: m.avatarUrl,
+        capacity:  cap.projectHours,
+        assigned,
+        overload:  assigned > cap.projectHours && cap.projectHours > 0,
+      };
+    });
+  }, [members, currentSprint, projects, holidays, vacations, absences, capacityConfigs]);
+
+  const projectsByRisk = useMemo(() => {
+    const g = { green: [], yellow: [], red: [], none: [] };
+    projects.forEach(p => g[dorRisk(p)].push(p));
+    return g;
+  }, [projects]);
 
   return (
     <div>
@@ -431,958 +551,1216 @@ function DashboardView({ sprints, members, projects }) {
         <h2 className="text-2xl font-bold text-gray-900">Visão Geral da Release</h2>
         <p className="text-gray-500 text-sm mt-1">Acompanhe capacidade, risco DoR e progresso geral</p>
       </div>
+
+      {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
-        <StatCard icon={Calendar}    label="Sprint Atual"        value={currentSprint?.name ?? '–'} sub={`${closedSprints}/${sprints.length} encerradas`}         color="#6366f1" />
-        <StatCard icon={Users}       label="Membros"             value={members.length}              sub={`${totalProjectHours}h de projeto`}                      color="#14b8a6" />
-        <StatCard icon={TrendingUp}  label="Horas Alocadas"      value={`${totalAssigned}h`}         sub={`de ${totalProjectHours}h disponíveis`}                  color={totalAssigned > totalProjectHours ? '#ef4444' : '#f59e0b'} />
-        <StatCard icon={CheckSquare} label="Histórias em DoR"    value={`${dorStories}/${totalStories}`} sub={`${totalStories - dorStories} aguardando refinamento`} color="#22c55e" />
+        <StatCard icon={Calendar}    label="Sprint Atual"     value={currentSprint?.name ?? '–'}
+          sub={`${sprints.filter(s=>s.status==='encerrada').length}/${sprints.length} encerradas`} color="#6366f1"/>
+        <StatCard icon={Users}       label="Membros"          value={members.length}
+          sub="no time"                                                                            color="#14b8a6"/>
+        <StatCard icon={CheckSquare} label="Histórias em DoR" value={`${completedStories}/${totalStories}`}
+          sub={`${totalStories - completedStories} aguardando`}                                   color="#22c55e"/>
+        <StatCard icon={FolderKanban} label="Projetos"        value={projects.length}
+          sub="na release"                                                                         color="#f59e0b"/>
       </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-8">
+        {/* Risco DoR */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div className="flex items-center gap-2 mb-4"><Shield size={18} className="text-indigo-600" /><h3 className="font-semibold text-gray-900">Status de Risco (DoR)</h3></div>
+          <div className="flex items-center gap-2 mb-4">
+            <Shield size={18} className="text-indigo-600"/>
+            <h3 className="font-semibold text-gray-900">Status de Risco (DoR)</h3>
+          </div>
           <div className="space-y-3">
-            {[{key:'green',label:'DoR Completo',color:'#22c55e',bg:'bg-green-50'},{key:'yellow',label:'Risco Médio',color:'#f59e0b',bg:'bg-yellow-50'},{key:'red',label:'Alto Risco',color:'#ef4444',bg:'bg-red-50'}].map((r) => (
+            {[{key:'green',label:'DoR Completo',color:'#22c55e',bg:'bg-green-50'},
+              {key:'yellow',label:'Risco Médio', color:'#f59e0b',bg:'bg-yellow-50'},
+              {key:'red',   label:'Alto Risco',  color:'#ef4444',bg:'bg-red-50'}].map(r => (
               <div key={r.key} className={`flex items-center justify-between rounded-xl px-4 py-3 ${r.bg}`}>
                 <span className="text-sm font-medium" style={{color:r.color}}>{r.label}</span>
-                <span className="text-2xl font-bold" style={{color:r.color}}>{riskCount[r.key]}</span>
+                <span className="text-2xl font-bold" style={{color:r.color}}>{projectsByRisk[r.key].length}</span>
               </div>
             ))}
           </div>
         </div>
+
+        {/* Capacidade por membro */}
         <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-          <div className="flex items-center gap-2 mb-5"><Zap size={18} className="text-indigo-600" /><h3 className="font-semibold text-gray-900">Capacidade por Membro</h3></div>
-          <div className="space-y-4">
-            {members.map((m) => {
-              const assigned = projects.reduce((a, p) => a + p.stories.filter((s) => s.assignee === m.id && s.hours).reduce((b, s) => b + s.hours, 0), 0);
-              const over = assigned > m.hours.project;
-              return (
-                <div key={m.id}>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <div className="flex items-center gap-2.5"><Avatar name={m.name} avatarUrl={m.avatarUrl} size={30} /><span className="text-sm font-medium text-gray-700">{m.name}</span></div>
+          <div className="flex items-center gap-2 mb-5">
+            <Zap size={18} className="text-indigo-600"/>
+            <h3 className="font-semibold text-gray-900">
+              Capacidade por Membro {currentSprint && `— ${currentSprint.name}`}
+            </h3>
+          </div>
+          {memberCapacity.length > 0 ? (
+            <div className="space-y-4">
+              {memberCapacity.map(mc => (
+                <div key={mc.memberId} className={`rounded-xl p-3 border ${mc.overload ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-100'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2.5">
+                      <Avatar name={mc.name} avatarUrl={mc.avatarUrl} size={30}/>
+                      <span className="text-sm font-medium text-gray-700">{mc.name}</span>
+                    </div>
                     <div className="flex items-center gap-3 text-xs">
-                      <span className="text-gray-400">{assigned}h / {m.hours.project}h proj.</span>
-                      <span className={`font-semibold ${over ? 'text-red-600' : 'text-green-600'}`}>{over ? `+${assigned - m.hours.project}h acima` : `${m.hours.project - assigned}h livres`}</span>
+                      <span className="text-gray-400">{mc.assigned}h / {mc.capacity}h proj.</span>
+                      {mc.overload
+                        ? <span className="font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-md">OVERLOAD +{mc.assigned - mc.capacity}h</span>
+                        : <span className="font-semibold text-green-600">{mc.capacity - mc.assigned}h livres</span>
+                      }
                     </div>
                   </div>
-                  <ProgressBar value={assigned} max={m.hours.project} color={over ? '#ef4444' : '#6366f1'} h={6} />
+                  <ProgressBar value={mc.assigned} max={Math.max(mc.capacity, mc.assigned, 1)} color={mc.overload ? '#ef4444' : '#6366f1'} h={6}/>
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400">{currentSprint ? 'Nenhum membro cadastrado.' : 'Nenhuma sprint com status "atual".'}</p>
+          )}
         </div>
       </div>
+
+      {/* Cards por projeto */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        {projects.map((p) => {
+        {projects.map(p => {
           const r = dorRisk(p); const rs = RISK_STYLES[r];
-          const dorCount = p.stories.filter((s) => s.hours).length;
+          const dorCount = p.stories.filter(s => s.hours).length;
           const totalH   = p.stories.reduce((a, s) => a + (s.hours ?? 0), 0);
           return (
             <div key={p.id} className={`bg-white rounded-2xl p-5 ${rs.card}`}>
               <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{backgroundColor:p.color}}/><span className="font-semibold text-gray-900 text-sm">{p.name}</span></div>
-                <span className={`text-xs px-2 py-1 rounded-lg font-medium ${rs.badge}`}><rs.icon size={11} className={`inline mr-1 ${rs.iconColor}`}/>{rs.label}</span>
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full" style={{backgroundColor:p.color}}/>
+                  <span className="font-semibold text-gray-900 text-sm">{p.name}</span>
+                </div>
+                <span className={`text-xs px-2 py-1 rounded-lg font-medium ${rs.badge}`}>
+                  <rs.icon size={11} className={`inline mr-1 ${rs.iconColor}`}/>{rs.label}
+                </span>
               </div>
               <p className="text-xs text-gray-500 mb-2">{dorCount}/{p.stories.length} em DoR · {totalH}h estimadas</p>
-              <ProgressBar value={dorCount} max={p.stories.length} color={r==='green'?'#22c55e':r==='yellow'?'#f59e0b':'#ef4444'} h={5} />
+              <ProgressBar value={dorCount} max={Math.max(p.stories.length,1)} color={r==='green'?'#22c55e':r==='yellow'?'#f59e0b':'#ef4444'} h={5}/>
             </div>
           );
         })}
       </div>
+
+      <GanttTimeline projects={projects} members={members} sprints={sprints}/>
     </div>
   );
 }
 
-function SprintsView({ sprints, setSprints, projects, setProjects, members }) {
+// ═══════════════════════════════════════════════════════════════
+// SPRINTS VIEW
+// ═══════════════════════════════════════════════════════════════
+function SprintsView({ sprints, setSprints, projects, setProjects, members, holidays }) {
   const [modal, setModal]   = useState(false);
   const [form, setForm]     = useState({ name: '', startDate: '', endDate: '', status: 'futura' });
   const [editId, setEditId] = useState(null);
   const [expanded, setExpanded] = useState({});
 
-  const save = () => {
-    if (!form.name.trim()) return;
-    if (editId) { setSprints((p) => p.map((s) => s.id === editId ? { ...s, ...form } : s)); setEditId(null); }
-    else        { setSprints((p) => [...p, { id: uid(), ...form }]); }
+  const handleSave = () => {
+    if (!form.name || !form.startDate || !form.endDate) return;
+    if (editId) {
+      setSprints(sprints.map(s => s.id === editId ? { ...form, id: editId } : s));
+    } else {
+      setSprints([...sprints, { ...form, id: uid() }]);
+    }
     setForm({ name: '', startDate: '', endDate: '', status: 'futura' });
+    setEditId(null);
     setModal(false);
   };
 
-  const openEdit = (s) => { setEditId(s.id); setForm({ name: s.name, startDate: s.startDate, endDate: s.endDate, status: s.status }); setModal(true); };
-  const remove   = (id) => setSprints((p) => p.filter((s) => s.id !== id));
-  const toggleExpand = (id) => setExpanded((e) => ({ ...e, [id]: !e[id] }));
-
-  // Reune todas as histórias de todos os projetos com info do projeto
-  const allStories = useMemo(() =>
-    projects.flatMap((p) => p.stories.map((s) => ({ ...s, projectName: p.name, projectColor: p.color, projectId: p.id }))),
-    [projects]
-  );
-
-  // Move história para outra sprint
-  const moveStory = (projectId, storyId, newSprintId) => {
-    setProjects((ps) => ps.map((p) =>
-      p.id === projectId
-        ? { ...p, stories: p.stories.map((s) => s.id === storyId ? { ...s, sprintId: newSprintId } : s) }
-        : p
-    ));
+  const handleEdit = (sprint) => {
+    setForm(sprint);
+    setEditId(sprint.id);
+    setModal(true);
   };
 
+  const handleDelete = (id) => {
+    setSprints(sprints.filter(s => s.id !== id));
+    setProjects(projects.map(p => ({
+      ...p,
+      stories: p.stories.map(s => s.sprintId === id ? { ...s, sprintId: '' } : s)
+    })));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-gray-900">Sprints</h2>
+        <Btn onClick={() => { setForm({ name: '', startDate: '', endDate: '', status: 'futura' }); setEditId(null); setModal(true); }}>
+          <Plus size={16} /> Nova Sprint
+        </Btn>
+      </div>
+
+      <Modal open={modal} onClose={() => setModal(false)} title={editId ? 'Editar Sprint' : 'Nova Sprint'}>
+        <Input label="Nome" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ex: Sprint 1" />
+        <Input label="Data de Início" type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} />
+        <Input label="Data de Término" type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} />
+        <Sel label="Status" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option value="futura">Futura</option>
+          <option value="atual">Atual</option>
+          <option value="encerrada">Encerrada</option>
+        </Sel>
+        <div className="flex gap-2">
+          <Btn variant="primary" onClick={handleSave}>{editId ? 'Salvar' : 'Criar'}</Btn>
+          <Btn variant="secondary" onClick={() => setModal(false)}>Cancelar</Btn>
+        </div>
+      </Modal>
+
+      <div className="space-y-4">
+        {sprints.map(sprint => {
+          const bizDays = sprint.startDate && sprint.endDate ? getBusinessDays(sprint.startDate, sprint.endDate, holidays) : 0;
+          const today = new Date().toISOString().slice(0, 10);
+          const remainingDays = sprint.startDate && sprint.endDate && sprint.startDate <= today && today <= sprint.endDate
+            ? getBusinessDays(today, sprint.endDate, holidays)
+            : null;
+
+          const st = SPRINT_STYLES[sprint.status];
+          const isOpen = expanded[sprint.id];
+          const sprintStories = projects.flatMap(p => p.stories.filter(s => s.sprintId === sprint.id).map(s => ({ ...s, projectId: p.id, projectColor: p.color, projectName: p.name })));
+          const assignedHours = sprintStories.reduce((sum, s) => sum + (s.hours || 0), 0);
+
+          return (
+            <div key={sprint.id} className={`bg-white rounded-2xl shadow-sm border overflow-hidden transition-all ${st.row}`}>
+              <div className="px-6 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50/50" onClick={() => setExpanded({ ...expanded, [sprint.id]: !isOpen })}>
+                <div className="flex items-center gap-4 flex-1">
+                  <div className={`w-3 h-3 rounded-full ${st.dot}`} />
+                  <div>
+                    <h3 className="font-semibold text-gray-900">{sprint.name}</h3>
+                    <p className="text-xs text-gray-500">
+                      {fmtDate(sprint.startDate)} – {fmtDate(sprint.endDate)} • <span className="font-medium">{bizDays} dias úteis</span>
+                      {remainingDays !== null && ` • ${remainingDays} dias restantes`}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right mr-4">
+                  <p className="text-sm font-semibold text-gray-900">{sprintStories.length}</p>
+                  <p className="text-xs text-gray-500">{assignedHours}h</p>
+                </div>
+                <button onClick={(e) => { e.stopPropagation(); setExpanded({ ...expanded, [sprint.id]: !isOpen }); }}>
+                  {isOpen ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                </button>
+              </div>
+
+              {isOpen && (
+                <div className="px-6 py-4 border-t border-gray-100 bg-gray-50/30">
+                  <div className="mb-4">
+                    <h4 className="font-medium text-gray-900 mb-3">Histórias ({sprintStories.length})</h4>
+                    <div className="space-y-2">
+                      {sprintStories.length > 0 ? (
+                        sprintStories.map(story => (
+                          <div key={story.id} className="p-3 bg-white rounded-xl border border-gray-100 flex items-start gap-3">
+                            <div className={`flex-1 min-w-0`}>
+                              <div className="flex items-center gap-2 mb-1">
+                                <p className="font-medium text-gray-900 truncate">{story.title}</p>
+                                {story.type && ITEM_TYPE_STYLES[story.type] && (
+                                  <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${ITEM_TYPE_STYLES[story.type].badge}`}>
+                                    {ITEM_TYPE_STYLES[story.type].label}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500">{story.projectName}</p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="text-sm font-semibold text-gray-900">{story.hours || '–'}h</p>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-gray-500 text-sm">Nenhuma história nesta sprint</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 pt-4 border-t border-gray-200">
+                    <Btn variant="secondary" size="sm" onClick={() => handleEdit(sprint)}>
+                      <Edit3 size={14} /> Editar
+                    </Btn>
+                    <Btn variant="danger" size="sm" onClick={() => handleDelete(sprint.id)}>
+                      <Trash2 size={14} /> Deletar
+                    </Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TEAM VIEW
+// ═══════════════════════════════════════════════════════════════
+function TeamView({ members, setMembers, setProjects, projects, sprints, filePath, holidays, vacations, setVacations, absences, setAbsences, capacityConfigs, setCapacityConfigs }) {
+  // ── member CRUD ─────────────────────────────────────────────
+  const [modal, setModal]   = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [form, setForm]     = useState({ name: '', avatarUrl: '' });
+
+  // sprintConfigs: { [sprintId]: { projectPerDay, ceremoniesPerDay } }
+  const [sprintConfigs, setSprintConfigs] = useState({});
+  const [activeSprintTab, setActiveSprintTab] = useState(null);
+
+  // ── vacation / absence modals ───────────────────────────────
+  const [vacationModal, setVacationModal] = useState(null); // memberId
+  const [absenceModal,  setAbsenceModal]  = useState(null); // memberId
+  const [vacForm,  setVacForm]  = useState({ startDate: '', endDate: '' });
+  const [absForm,  setAbsForm]  = useState({ date: '', type: 'day_off' });
+
+  const openNew = () => {
+    setEditId(null);
+    setForm({ name: '', avatarUrl: '' });
+    // Initialize sprintConfigs com defaults
+    const defaults = {};
+    sprints.forEach(sp => { defaults[sp.id] = { projectPerDay: 6, ceremoniesPerDay: 2 }; });
+    setSprintConfigs(defaults);
+    setActiveSprintTab(sprints[0]?.id || null);
+    setModal(true);
+  };
+
+  const openEdit = (member) => {
+    setEditId(member.id);
+    setForm({ name: member.name, avatarUrl: member.avatarUrl || '' });
+    // Carrega configs existentes, preenche defaults para sprints sem config
+    const configs = {};
+    sprints.forEach(sp => {
+      const existing = capacityConfigs.find(c => c.memberId === member.id && c.sprintId === sp.id);
+      configs[sp.id] = {
+        projectPerDay:    existing?.projectPerDay    ?? 6,
+        ceremoniesPerDay: existing?.ceremoniesPerDay ?? 2,
+      };
+    });
+    setSprintConfigs(configs);
+    setActiveSprintTab(sprints[0]?.id || null);
+    setModal(true);
+  };
+
+  const saveMember = () => {
+    if (!form.name.trim()) return;
+    let memberId = editId;
+    if (editId) {
+      setMembers(ms => ms.map(m => m.id === editId ? { ...m, ...form } : m));
+    } else {
+      memberId = uid();
+      setMembers(ms => [...ms, { id: memberId, ...form }]);
+    }
+    // Salva capacityConfigs: remove antigas deste membro, adiciona novas
+    setCapacityConfigs(old => {
+      const others = old.filter(c => c.memberId !== memberId);
+      const news   = Object.entries(sprintConfigs).map(([sprintId, cfg]) => ({
+        id: uid(), memberId, sprintId,
+        projectPerDay:    cfg.projectPerDay,
+        ceremoniesPerDay: cfg.ceremoniesPerDay,
+      }));
+      return [...others, ...news];
+    });
+    setModal(false);
+  };
+
+  const removeMember = (id) => {
+    setMembers(ms => ms.filter(m => m.id !== id));
+    setCapacityConfigs(old => old.filter(c => c.memberId !== id));
+    setProjects(ps => ps.map(p => ({
+      ...p, stories: p.stories.map(s => s.assignee === id ? { ...s, assignee: '' } : s)
+    })));
+  };
+
+  const selectAvatar = async () => {
+    if (!filePath) return;
+    const path = await api.selectAvatar(filePath);
+    if (path && !path.error) setForm(f => ({ ...f, avatarUrl: path }));
+  };
+
+  const saveVacation = (memberId) => {
+    if (!vacForm.startDate || !vacForm.endDate) return;
+    setVacations(vs => [...vs, { id: uid(), memberId, startDate: vacForm.startDate, endDate: vacForm.endDate }]);
+    setVacForm({ startDate: '', endDate: '' });
+    setVacationModal(null);
+  };
+
+  const saveAbsence = (memberId) => {
+    if (!absForm.date) return;
+    setAbsences(as => [...as, { id: uid(), memberId, date: absForm.date, type: absForm.type }]);
+    setAbsForm({ date: '', type: 'day_off' });
+    setAbsenceModal(null);
+  };
+
+  const setSprintCfg = (sprintId, key, val) =>
+    setSprintConfigs(s => ({ ...s, [sprintId]: { ...s[sprintId], [key]: Number(val) || 0 } }));
+
+  // ── render ──────────────────────────────────────────────────
   return (
     <div>
       <div className="flex justify-between items-center mb-8">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Sprints da Release</h2>
-          <p className="text-gray-500 text-sm mt-1">Clique em uma sprint para ver e gerenciar suas histórias</p>
+          <h2 className="text-2xl font-bold text-gray-900">Equipe</h2>
+          <p className="text-gray-500 text-sm mt-1">Gerencie membros e configure a capacidade por sprint</p>
         </div>
-        <Btn onClick={() => { setEditId(null); setForm({ name: `Sprint ${sprints.length + 1}`, startDate: '', endDate: '', status: 'futura' }); setModal(true); }}>
-          <Plus size={16} /> Adicionar Sprint
-        </Btn>
+        <Btn onClick={openNew}><Plus size={16} /> Novo Membro</Btn>
       </div>
 
-      {/* Sprint summary row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        {sprints.map((sp) => {
-          const count = allStories.filter((s) => s.sprintId === sp.id).length;
-          const dor   = allStories.filter((s) => s.sprintId === sp.id && s.hours).length;
-          const st    = SPRINT_STYLES[sp.status];
-          return (
-            <div key={sp.id} className={`rounded-2xl border p-4 cursor-pointer transition-all hover:shadow-md ${expanded[sp.id] ? 'ring-2 ring-indigo-500' : ''} ${st.row}`}
-              onClick={() => toggleExpand(sp.id)}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-semibold text-gray-800 text-sm">{sp.name}</span>
-                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${st.badge}`}>{sp.status}</span>
-              </div>
-              <div className="flex items-center gap-3 text-xs text-gray-500">
-                <span className="flex items-center gap-1"><BookOpen size={11}/>{count} histórias</span>
-                <span className="flex items-center gap-1"><CheckCircle2 size={11} className="text-green-500"/>{dor} DoR</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="space-y-4">
-        {sprints.map((s, i) => {
-          const st = SPRINT_STYLES[s.status];
-          const days = s.startDate && s.endDate ? Math.ceil(dateDiff(s.startDate, s.endDate)) : null;
-          const sprintStories = allStories.filter((st2) => st2.sprintId === s.id);
-          const isOpen = expanded[s.id];
-
-          return (
-            <div key={s.id} className={`rounded-2xl border overflow-hidden ${st.row}`}>
-              {/* Sprint header */}
-              <div className="flex items-center justify-between p-5">
-                <div className="flex items-center gap-4">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-sm ${s.status==='atual'?'bg-indigo-600':s.status==='encerrada'?'bg-gray-400':'bg-violet-500'}`}>{i+1}</div>
-                  <div>
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <h3 className="font-semibold text-gray-900">{s.name}</h3>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${st.badge}`}>
-                        <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1 ${st.dot}`}/>
-                        {s.status.charAt(0).toUpperCase()+s.status.slice(1)}
-                      </span>
-                      {sprintStories.length > 0 && (
-                        <span className="text-xs bg-white/70 text-gray-600 px-2 py-0.5 rounded-full border border-gray-200">
-                          {sprintStories.length} história{sprintStories.length !== 1 ? 's' : ''}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-gray-500">
-                      {fmtDate(s.startDate)} → {fmtDate(s.endDate)}
-                      {days !== null && <span className="ml-2 text-gray-400">({days} dias)</span>}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex gap-2 items-center">
-                  <button
-                    onClick={() => toggleExpand(s.id)}
-                    className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-indigo-600 bg-white/60 px-3 py-1.5 rounded-lg border border-gray-200 transition-all"
-                  >
-                    <BookOpen size={13}/>
-                    {isOpen ? 'Ocultar histórias' : 'Ver histórias'}
-                    {isOpen ? <ChevronUp size={13}/> : <ChevronDown size={13}/>}
-                  </button>
-                  <Btn variant="ghost" onClick={() => openEdit(s)}><Edit3 size={15} /></Btn>
-                  <Btn variant="danger" onClick={() => remove(s.id)}><Trash2 size={15} /></Btn>
-                </div>
-              </div>
-
-              {/* Sprint stories panel */}
-              {isOpen && (
-                <div className="border-t border-gray-200/60 bg-white/60 divide-y divide-gray-100">
-                  {sprintStories.length === 0 ? (
-                    <p className="text-sm text-gray-400 text-center py-6">Nenhuma história vinculada a esta sprint</p>
-                  ) : (
-                    sprintStories.map((story) => {
-                      const assigneeMember = members.find((m) => m.id === story.assignee);
-                      const isDor = !!story.hours;
-                      const proj = projects.find((p) => p.id === story.projectId);
-                      return (
-                        <div key={story.id} className="flex items-center gap-3 px-5 py-3">
-                          {isDor
-                            ? <CheckCircle2 size={15} className="text-green-500 shrink-0"/>
-                            : <AlertCircle  size={15} className="text-red-400 shrink-0"/>
-                          }
-                          {/* Project color dot */}
-                          <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: story.projectColor }}/>
-                          <span className="text-sm text-gray-700 flex-1">{story.title}</span>
-                          {/* Project chip */}
-                          <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md border border-gray-100 shrink-0 hidden md:inline">
-                            {story.projectName}
-                          </span>
-                          {/* Hours */}
-                          {story.hours && <span className="text-xs font-medium text-indigo-600 shrink-0">{story.hours}h</span>}
-                          {/* Assignee */}
-                          {assigneeMember && <Avatar name={assigneeMember.name} avatarUrl={assigneeMember.avatarUrl} size={24}/>}
-                          {/* Move to sprint */}
-                          <div className="shrink-0">
-                            <select
-                              value={story.sprintId}
-                              onChange={(e) => moveStory(story.projectId, story.id, e.target.value)}
-                              onClick={(e) => e.stopPropagation()}
-                              title="Mover para outra sprint (tombamento)"
-                              className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400 text-gray-600"
-                            >
-                              <option value="">Sem sprint</option>
-                              {sprints.map((sp2) => (
-                                <option key={sp2.id} value={sp2.id}>{sp2.name}</option>
-                              ))}
-                            </select>
-                          </div>
-                          {!isDor && (
-                            <span className="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded-md font-medium shrink-0">
-                              Não DoR
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <Modal open={modal} onClose={() => setModal(false)} title={editId ? 'Editar Sprint' : 'Nova Sprint'}>
-        <Input label="Nome" value={form.name} onChange={(e) => setForm((f) => ({...f, name: e.target.value}))} />
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Início" type="date" value={form.startDate} onChange={(e) => setForm((f) => ({...f, startDate: e.target.value}))} />
-          <Input label="Fim"    type="date" value={form.endDate}   onChange={(e) => setForm((f) => ({...f, endDate: e.target.value}))} />
-        </div>
-        <Sel label="Status" value={form.status} onChange={(e) => setForm((f) => ({...f, status: e.target.value}))}>
-          <option value="futura">Futura</option><option value="atual">Atual</option><option value="encerrada">Encerrada</option>
-        </Sel>
-        <Btn className="w-full justify-center mt-1" onClick={save}>{editId ? 'Salvar' : 'Adicionar Sprint'}</Btn>
-      </Modal>
-    </div>
-  );
-}
-
-function TeamView({ members, setMembers, projects, sprints, filePath }) {
-  const [modal, setModal] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState({ name: '', avatarUrl: '', hours: { vacation: 0, project: 70, ceremonies: 20 } });
-
-  const save = () => {
-    if (!form.name.trim()) return;
-    if (editId) { setMembers((p) => p.map((m) => m.id === editId ? { ...m, ...form } : m)); setEditId(null); }
-    else        { setMembers((p) => [...p, { id: uid(), avatarUrl: '', ...form }]); }
-    setForm({ name: '', avatarUrl: '', hours: { vacation: 0, project: 70, ceremonies: 20 } });
-    setModal(false);
-  };
-
-  const openEdit = (m) => {
-    setEditId(m.id);
-    setForm({ name: m.name, avatarUrl: m.avatarUrl || '', hours: { ...m.hours } });
-    setModal(true);
-  };
-  const remove = (id) => setMembers((p) => p.filter((m) => m.id !== id));
-  const hf = (key, val) => setForm((f) => ({ ...f, hours: { ...f.hours, [key]: Number(val) || 0 } }));
-
-  const handleSelectAvatar = async () => {
-    if (!filePath) return;
-    const result = await api.selectAvatar(filePath);
-    if (result && !result.error) {
-      setForm((f) => ({ ...f, avatarUrl: result }));
-    }
-  };
-
-  return (
-    <div>
-      <div className="flex justify-between items-center mb-8">
-        <div><h2 className="text-2xl font-bold text-gray-900">Equipe</h2><p className="text-gray-500 text-sm mt-1">Gerencie capacidade com férias, projeto e cerimônias</p></div>
-        <Btn onClick={() => { setEditId(null); setForm({ name: '', hours: { vacation: 0, project: 70, ceremonies: 20 } }); setModal(true); }}><Plus size={16} /> Novo Membro</Btn>
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {members.map((m) => {
-          const total    = m.hours.vacation + m.hours.project + m.hours.ceremonies;
-          const assigned = projects.reduce((a, p) => a + p.stories.filter((s) => s.assignee === m.id && s.hours).reduce((b, s) => b + s.hours, 0), 0);
-          const remaining = m.hours.project - assigned;
-          const over = remaining < 0;
-          const assignedStories = projects.flatMap((p) =>
-            p.stories.filter((s) => s.assignee === m.id)
-              .map((s) => ({ ...s, projectName: p.name, projectColor: p.color }))
-          );
-          // Agrupa histórias por sprint
-          const storiesBySprint = sprints.map((sp) => ({
-            sprint: sp,
-            stories: assignedStories.filter((s) => s.sprintId === sp.id),
-            hours: assignedStories.filter((s) => s.sprintId === sp.id && s.hours).reduce((a, s) => a + s.hours, 0),
-          }));
-          const withoutSprint = assignedStories.filter((s) => !s.sprintId);
-
-          return (
-            <div key={m.id} className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-5">
-                <div className="flex items-center gap-3">
-                  <Avatar name={m.name} avatarUrl={m.avatarUrl} size={48} />
-                  <div>
-                    <p className="font-semibold text-gray-900">{m.name}</p>
-                    <p className="text-xs text-gray-400">{total}h totais · {assigned}h alocadas</p>
-                  </div>
-                </div>
-                <div className="flex gap-1">
-                  <Btn variant="ghost" onClick={() => openEdit(m)}><Edit3 size={15} /></Btn>
-                  <Btn variant="danger" onClick={() => remove(m.id)}><Trash2 size={15} /></Btn>
-                </div>
-              </div>
-
-              {/* Hours bars */}
-              <div className="space-y-3 mb-5">
-                {[{key:'vacation',label:'Férias',color:'#f59e0b',icon:Umbrella,bg:'bg-amber-50 text-amber-700'},
-                  {key:'project',label:'Horas de Projeto',color:'#6366f1',icon:Code2,bg:'bg-indigo-50 text-indigo-700'},
-                  {key:'ceremonies',label:'Colaboração / Cerimônias',color:'#14b8a6',icon:Coffee,bg:'bg-teal-50 text-teal-700'}].map((c) => (
-                  <div key={c.key}>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-md ${c.bg}`}><c.icon size={11}/>{c.label}</span>
-                      <span className="text-xs font-semibold text-gray-600">{m.hours[c.key]}h</span>
-                    </div>
-                    <ProgressBar value={m.hours[c.key]} max={total} color={c.color} h={5} />
-                  </div>
-                ))}
-              </div>
-
-              {/* Allocation bar */}
-              <div className={`rounded-xl p-4 mb-4 ${over ? 'bg-red-50' : 'bg-gray-50'}`}>
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs font-medium text-gray-600">Projeto: alocado vs disponível</span>
-                  <span className={`text-xs font-bold ${over ? 'text-red-600' : 'text-green-600'}`}>
-                    {over ? `${Math.abs(remaining)}h acima` : `${remaining}h livres`}
-                  </span>
-                </div>
-                <ProgressBar value={assigned} max={m.hours.project} color={over ? '#ef4444' : '#6366f1'} h={7} />
-                <p className="text-xs text-gray-400 mt-1.5">{assigned}h de {m.hours.project}h de projeto</p>
-              </div>
-
-              {/* Histórias agrupadas por sprint */}
-              {assignedStories.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">Histórias por Sprint</p>
-                  <div className="space-y-2">
-                    {storiesBySprint.filter((g) => g.stories.length > 0).map(({ sprint, stories: gs, hours: gh }) => {
-                      const st = SPRINT_STYLES[sprint.status];
-                      return (
-                        <div key={sprint.id} className={`rounded-xl border overflow-hidden ${st.row}`}>
-                          {/* Sprint label row */}
-                          <div className="flex items-center justify-between px-3 py-1.5">
-                            <div className="flex items-center gap-2">
-                              <span className={`w-2 h-2 rounded-full ${st.dot}`}/>
-                              <span className="text-xs font-semibold text-gray-700">{sprint.name}</span>
-                              <span className={`text-xs px-1.5 py-0.5 rounded-full ${st.badge}`}>{sprint.status}</span>
-                            </div>
-                            <span className="text-xs font-bold text-indigo-600">{gh}h</span>
-                          </div>
-                          {/* Stories */}
-                          <div className="divide-y divide-gray-100/60">
-                            {gs.map((s) => (
-                              <div key={s.id} className="flex items-center gap-2 bg-white/70 px-3 py-2">
-                                {s.hours
-                                  ? <CheckCircle2 size={12} className="text-green-500 shrink-0"/>
-                                  : <AlertCircle  size={12} className="text-red-400 shrink-0"/>
-                                }
-                                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.projectColor }}/>
-                                <span className="text-xs text-gray-600 flex-1 truncate">{s.title}</span>
-                                <span className="text-xs text-gray-400 shrink-0">{s.projectName}</span>
-                                <span className={`text-xs font-medium shrink-0 ${s.hours ? 'text-indigo-600' : 'text-red-400'}`}>
-                                  {s.hours ? `${s.hours}h` : 'Sem est.'}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {withoutSprint.length > 0 && (
-                      <div className="rounded-xl border border-dashed border-gray-200 overflow-hidden">
-                        <div className="flex items-center justify-between px-3 py-1.5 bg-gray-50">
-                          <span className="text-xs font-semibold text-gray-400">Sem sprint definida</span>
-                          <span className="text-xs text-gray-400">{withoutSprint.length} hist.</span>
-                        </div>
-                        {withoutSprint.map((s) => (
-                          <div key={s.id} className="flex items-center gap-2 bg-white px-3 py-2 border-t border-gray-100">
-                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.projectColor }}/>
-                            <span className="text-xs text-gray-500 flex-1 truncate">{s.title}</span>
-                            <span className={`text-xs font-medium ${s.hours ? 'text-indigo-600' : 'text-red-400'}`}>
-                              {s.hours ? `${s.hours}h` : 'Sem est.'}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {/* ── MODAL ─────────────────────────────────────────────── */}
       <Modal open={modal} onClose={() => setModal(false)} title={editId ? 'Editar Membro' : 'Novo Membro'}>
-        <Input label="Nome completo" value={form.name} onChange={(e) => setForm((f) => ({...f, name: e.target.value}))} />
-
-        {/* ── Foto de perfil ── */}
+        {/* Nome e avatar */}
+        <Input label="Nome completo" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ex: Ana Souza" />
         <div className="mb-5">
           <label className="block text-sm font-medium text-gray-700 mb-2">Foto de perfil</label>
           <div className="flex items-center gap-4">
-            {/* Preview */}
-            <div className="shrink-0">
-              {form.name
-                ? <Avatar name={form.name} avatarUrl={form.avatarUrl} size={56} />
-                : <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center"><UserCircle size={28} className="text-gray-400" /></div>
-              }
-            </div>
-            <div className="flex flex-col gap-2">
-              <Btn variant="secondary" type="button" onClick={handleSelectAvatar}>
-                <Upload size={14} />
-                {form.avatarUrl ? 'Trocar foto' : 'Selecionar foto'}
+            {form.name
+              ? <Avatar name={form.name} avatarUrl={form.avatarUrl} size={52} />
+              : <div className="w-13 h-13 rounded-full bg-gray-100 flex items-center justify-center"><Users size={26} className="text-gray-400"/></div>
+            }
+            <div className="flex flex-col gap-1.5">
+              <Btn variant="secondary" type="button" onClick={selectAvatar}>
+                <Upload size={14}/>{form.avatarUrl ? 'Trocar foto' : 'Selecionar foto'}
               </Btn>
               {form.avatarUrl && (
-                <button
-                  onClick={() => setForm((f) => ({ ...f, avatarUrl: '' }))}
-                  className="text-xs text-red-400 hover:text-red-600 text-left transition-colors"
-                >
+                <button onClick={() => setForm(f => ({ ...f, avatarUrl: '' }))} className="text-xs text-red-400 hover:text-red-600">
                   Remover foto
                 </button>
               )}
-              <p className="text-xs text-gray-400">JPG, PNG ou WEBP</p>
             </div>
           </div>
         </div>
 
-        <p className="text-sm font-medium text-gray-700 mb-3">Distribuição de horas na sprint</p>
-        <div className="grid grid-cols-3 gap-3">
-          {[{key:'vacation',label:'Férias'},{key:'project',label:'Projeto'},{key:'ceremonies',label:'Cerimônias'}].map((f) => (
-            <div key={f.key}><label className="block text-xs text-gray-500 mb-1">{f.label} (h)</label><input className={inputCls} type="number" value={form.hours[f.key]} onChange={(e) => hf(f.key, e.target.value)}/></div>
-          ))}
+        {/* Configuração de capacidade por sprint */}
+        {sprints.length > 0 ? (
+          <div className="mb-4">
+            <p className="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-2">
+              <Clock size={15} className="text-indigo-600"/>Capacidade por Sprint
+            </p>
+
+            {/* Tabs de sprint */}
+            <div className="flex gap-1.5 mb-4 flex-wrap">
+              {sprints.map(sp => {
+                const st = SPRINT_STYLES[sp.status];
+                return (
+                  <button key={sp.id} onClick={() => setActiveSprintTab(sp.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                      activeSprintTab === sp.id
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                        : `${st.badge} border-transparent hover:border-gray-300`
+                    }`}>
+                    {sp.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Painel da sprint ativa */}
+            {sprints.filter(sp => sp.id === activeSprintTab).map(sp => {
+              const cfg = sprintConfigs[sp.id] || { projectPerDay: 6, ceremoniesPerDay: 2 };
+              const bizDays  = sp.startDate && sp.endDate ? getBusinessDays(sp.startDate, sp.endDate, holidays) : 0;
+              const vacDays  = getMemberVacationDaysInSprint(editId || '__new__', sp.startDate, sp.endDate, vacations);
+              const absDays  = getMemberAbsenceDaysInSprint(editId || '__new__', sp.startDate, sp.endDate, absences);
+              const availDays = Math.max(0, bizDays - vacDays - absDays);
+              const projHours = availDays * cfg.projectPerDay;
+              const cerHours  = availDays * cfg.ceremoniesPerDay;
+
+              return (
+                <div key={sp.id} className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                  {/* Datas da sprint */}
+                  <p className="text-xs text-gray-500 mb-4">
+                    {fmtDate(sp.startDate)} → {fmtDate(sp.endDate)}
+                  </p>
+
+                  {/* Inputs */}
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Horas Projeto / Dia</label>
+                      <input
+                        type="number" min={0} max={24}
+                        value={cfg.projectPerDay}
+                        onChange={e => setSprintCfg(sp.id, 'projectPerDay', e.target.value)}
+                        className={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Horas Cerimônias / Dia</label>
+                      <input
+                        type="number" min={0} max={24}
+                        value={cfg.ceremoniesPerDay}
+                        onChange={e => setSprintCfg(sp.id, 'ceremoniesPerDay', e.target.value)}
+                        className={inputCls}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Breakdown automático */}
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex justify-between py-1 border-b border-gray-200">
+                      <span className="text-gray-500">Dias úteis na sprint</span>
+                      <span className="font-medium text-gray-800">{bizDays} dias</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-gray-200">
+                      <span className="text-gray-500">( - ) Feriados</span>
+                      <span className="font-medium text-amber-600">
+                        {/* Calcula feriados que caem nos dias úteis da sprint */}
+                        {(() => {
+                          if (!sp.startDate || !sp.endDate) return '0 dias';
+                          const start = new Date(sp.startDate + 'T00:00:00');
+                          const end   = new Date(sp.endDate   + 'T00:00:00');
+                          const hSet  = new Set(holidays.map(h => h.date));
+                          let cnt = 0;
+                          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                            const day = d.getDay();
+                            if (day !== 0 && day !== 6 && hSet.has(d.toISOString().slice(0,10))) cnt++;
+                          }
+                          return `${cnt} dia${cnt !== 1 ? 's' : ''}`;
+                        })()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-gray-200">
+                      <span className="text-gray-500">( - ) Férias</span>
+                      <span className="font-medium text-amber-600">{vacDays} dia{vacDays !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-gray-200">
+                      <span className="text-gray-500">( - ) Ausências</span>
+                      <span className="font-medium text-amber-600">{absDays} dia{absDays !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-gray-200 font-semibold">
+                      <span className="text-gray-700">Dias disponíveis</span>
+                      <span className="text-indigo-700">{availDays} dias</span>
+                    </div>
+                    <div className="flex justify-between pt-2">
+                      <span className="text-indigo-700 font-semibold">Total Projeto</span>
+                      <span className="font-bold text-indigo-700">{projHours}h</span>
+                    </div>
+                    <div className="flex justify-between pb-1">
+                      <span className="text-teal-700 font-semibold">Total Cerimônias</span>
+                      <span className="font-bold text-teal-700">{cerHours}h</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-700">
+            Cadastre sprints primeiro para configurar a capacidade por sprint.
+          </div>
+        )}
+
+        <div className="flex gap-2 mt-2">
+          <Btn className="flex-1 justify-center" onClick={saveMember}>{editId ? 'Salvar' : 'Adicionar'}</Btn>
+          <Btn variant="secondary" onClick={() => setModal(false)}>Cancelar</Btn>
         </div>
-        <div className="bg-indigo-50 rounded-xl p-3 my-3 text-xs text-indigo-600">Total: {form.hours.vacation + form.hours.project + form.hours.ceremonies}h nesta sprint</div>
-        <Btn className="w-full justify-center" onClick={save}>{editId ? 'Salvar' : 'Adicionar'}</Btn>
+      </Modal>
+
+      {/* ── CARDS DOS MEMBROS ─────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {members.map(member => {
+          const memberVacations = vacations.filter(v => v.memberId === member.id);
+          const memberAbsences  = absences.filter(a => a.memberId === member.id);
+
+          return (
+            <div key={member.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              {/* Header do card */}
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Avatar name={member.name} avatarUrl={member.avatarUrl} size={46} />
+                  <div>
+                    <p className="font-semibold text-gray-900">{member.name}</p>
+                    <p className="text-xs text-gray-400">{memberVacations.length} período(s) de férias · {memberAbsences.length} ausência(s)</p>
+                  </div>
+                </div>
+                <div className="flex gap-1">
+                  <Btn variant="ghost" onClick={() => openEdit(member)}><Edit3 size={15}/></Btn>
+                  <Btn variant="danger" onClick={() => removeMember(member.id)}><Trash2 size={15}/></Btn>
+                </div>
+              </div>
+
+              <div className="px-6 py-4 space-y-4">
+                {/* Capacidade por sprint */}
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Capacidade Preditiva</p>
+                  {sprints.length > 0 ? (
+                    <div className="space-y-2">
+                      {sprints.map(sp => {
+                        const cap = getMemberSprintCapacity(member.id, sp, capacityConfigs, holidays, vacations, absences);
+                        const st  = SPRINT_STYLES[sp.status];
+                        const assignedInSprint = projects.reduce((a, p) =>
+                          a + p.stories.filter(s => s.assignee === member.id && s.sprintId === sp.id && s.hours)
+                            .reduce((b, s) => b + s.hours, 0), 0);
+                        const overload = assignedInSprint > cap.projectHours && cap.projectHours > 0;
+                        return (
+                          <div key={sp.id} className={`rounded-xl border px-3 py-2.5 ${overload ? 'bg-red-50 border-red-200' : st.row}`}>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <div className="flex items-center gap-2">
+                                <span className={`w-2 h-2 rounded-full ${st.dot}`}/>
+                                <span className="text-xs font-semibold text-gray-700">{sp.name}</span>
+                                {overload && <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded-md font-semibold">OVERLOAD</span>}
+                              </div>
+                              <span className="text-xs font-bold text-indigo-700">{cap.projectHours}h proj · {cap.ceremoniesHours}h cer</span>
+                            </div>
+                            <p className="text-xs text-gray-500">
+                              {cap.availDays}d disponíveis
+                              {cap.vacDays > 0 && ` · ${cap.vacDays}d férias`}
+                              {cap.absDays > 0 && ` · ${cap.absDays}d ausência`}
+                              <span className="ml-1 text-gray-400">({cap.projectPerDay}h proj/dia · {cap.ceremoniesPerDay}h cer/dia)</span>
+                            </p>
+                            {assignedInSprint > 0 && (
+                              <ProgressBar value={assignedInSprint} max={Math.max(cap.projectHours, 1)} color={overload ? '#ef4444' : '#6366f1'} h={4} />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400">Cadastre sprints para ver a capacidade.</p>
+                  )}
+                </div>
+
+                {/* Férias */}
+                <div className="border-t border-gray-100 pt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Férias</p>
+                    <button onClick={() => { setVacationModal(member.id); setVacForm({ startDate: '', endDate: '' }); }}
+                      className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ Adicionar</button>
+                  </div>
+                  {memberVacations.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {memberVacations.map(v => (
+                        <div key={v.id} className="flex items-center justify-between text-xs bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                          <span className="text-amber-800">{fmtDate(v.startDate)} → {fmtDate(v.endDate)}</span>
+                          <button onClick={() => setVacations(vs => vs.filter(x => x.id !== v.id))} className="text-red-400 hover:text-red-600 ml-2"><Trash2 size={13}/></button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400">Nenhum período cadastrado</p>
+                  )}
+                </div>
+
+                {/* Ausências */}
+                <div className="border-t border-gray-100 pt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Ausências Rápidas</p>
+                    <button onClick={() => { setAbsenceModal(member.id); setAbsForm({ date: '', type: 'day_off' }); }}
+                      className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ Adicionar</button>
+                  </div>
+                  {memberAbsences.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {memberAbsences.map(a => {
+                        const typeLabel = { day_off: 'Day Off', treinamento: 'Treinamento', consulta: 'Consulta' }[a.type] || a.type;
+                        return (
+                          <div key={a.id} className="flex items-center justify-between text-xs bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
+                            <span className="text-violet-800">{fmtDate(a.date)} · <span className="font-medium">{typeLabel}</span></span>
+                            <button onClick={() => setAbsences(as => as.filter(x => x.id !== a.id))} className="text-red-400 hover:text-red-600 ml-2"><Trash2 size={13}/></button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400">Nenhuma ausência cadastrada</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Modais de férias e ausências */}
+      <Modal open={!!vacationModal} onClose={() => setVacationModal(null)} title="Adicionar Férias">
+        {vacationModal && (
+          <>
+            <Input label="Início" type="date" value={vacForm.startDate} onChange={e => setVacForm(f => ({ ...f, startDate: e.target.value }))} />
+            <Input label="Fim"    type="date" value={vacForm.endDate}   onChange={e => setVacForm(f => ({ ...f, endDate: e.target.value }))} />
+            <div className="flex gap-2">
+              <Btn className="flex-1 justify-center" onClick={() => saveVacation(vacationModal)}>Salvar</Btn>
+              <Btn variant="secondary" onClick={() => setVacationModal(null)}>Cancelar</Btn>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      <Modal open={!!absenceModal} onClose={() => setAbsenceModal(null)} title="Adicionar Ausência Rápida">
+        {absenceModal && (
+          <>
+            <Input label="Data" type="date" value={absForm.date} onChange={e => setAbsForm(f => ({ ...f, date: e.target.value }))} />
+            <Sel label="Tipo" value={absForm.type} onChange={e => setAbsForm(f => ({ ...f, type: e.target.value }))}>
+              <option value="day_off">Day Off</option>
+              <option value="treinamento">Treinamento</option>
+              <option value="consulta">Consulta Médica</option>
+            </Sel>
+            <div className="flex gap-2">
+              <Btn className="flex-1 justify-center" onClick={() => saveAbsence(absenceModal)}>Salvar</Btn>
+              <Btn variant="secondary" onClick={() => setAbsenceModal(null)}>Cancelar</Btn>
+            </div>
+          </>
+        )}
       </Modal>
     </div>
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// PROJECTS VIEW
+// ═══════════════════════════════════════════════════════════════
 function ProjectsView({ projects, setProjects, members, sprints }) {
   const [projModal, setProjModal]   = useState(false);
   const [storyModal, setStoryModal] = useState(null);
   const [editProjId, setEditProjId] = useState(null);
   const [pf, setPf] = useState({ name: '', color: '#6366f1', startDate: '', endDate: '' });
-  const [sf, setSf] = useState({ title: '', assignee: '', hours: '', description: '', sprintId: '' });
+  const [sf, setSf] = useState({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' });
   const [expandedStories, setExpandedStories] = useState({});
 
-  const saveProject = () => {
-    if (!pf.name.trim()) return;
-    if (editProjId) { setProjects((p) => p.map((x) => x.id === editProjId ? { ...x, ...pf } : x)); setEditProjId(null); }
-    else            { setProjects((p) => [...p, { id: uid(), ...pf, stories: [] }]); }
-    setPf({ name: '', color: '#6366f1', startDate: '', endDate: '' }); setProjModal(false);
+  const handleSaveProj = () => {
+    if (!pf.name) return;
+    if (editProjId) {
+      setProjects(projects.map(p => p.id === editProjId ? { ...p, name: pf.name, color: pf.color, startDate: pf.startDate, endDate: pf.endDate } : p));
+    } else {
+      setProjects([...projects, { ...pf, id: uid(), stories: [] }]);
+    }
+    setPf({ name: '', color: '#6366f1', startDate: '', endDate: '' });
+    setEditProjId(null);
+    setProjModal(false);
   };
 
-  const saveStory = () => {
-    if (!sf.title.trim()) return;
-    setProjects((p) => p.map((x) => x.id === storyModal
-      ? { ...x, stories: [...x.stories, { id: uid(), title: sf.title, assignee: sf.assignee, hours: sf.hours ? Number(sf.hours) : null, description: sf.description, sprintId: sf.sprintId || '' }] }
-      : x));
-    setSf({ title: '', assignee: '', hours: '', description: '', sprintId: '' }); setStoryModal(null);
+  const handleDeleteProj = (id) => {
+    setProjects(projects.filter(p => p.id !== id));
   };
 
-  const removeProject    = (id) => setProjects((p) => p.filter((x) => x.id !== id));
-  const removeStory      = (pid, sid) => setProjects((p) => p.map((x) => x.id === pid ? { ...x, stories: x.stories.filter((s) => s.id !== sid) } : x));
-  const updateAssignee   = (pid, sid, val) => setProjects((p) => p.map((x) => x.id === pid ? { ...x, stories: x.stories.map((s) => s.id === sid ? { ...s, assignee: val } : s) } : x));
-  const updateHours      = (pid, sid, val) => setProjects((p) => p.map((x) => x.id === pid ? { ...x, stories: x.stories.map((s) => s.id === sid ? { ...s, hours: val ? Number(val) : null } : s) } : x));
-  const updateStorySprint= (pid, sid, val) => setProjects((p) => p.map((x) => x.id === pid ? { ...x, stories: x.stories.map((s) => s.id === sid ? { ...s, sprintId: val } : s) } : x));
-  const toggleStory      = (id) => setExpandedStories((p) => ({ ...p, [id]: !p[id] }));
+  const handleSaveStory = (projId) => {
+    if (!sf.title) return;
+    setProjects(projects.map(p => {
+      if (p.id !== projId) return p;
+      if (storyModal) {
+        return { ...p, stories: p.stories.map(s => s.id === storyModal ? { ...s, title: sf.title, assignee: sf.assignee, hours: sf.hours ? Number(sf.hours) : null, description: sf.description, sprintId: sf.sprintId, type: sf.type } : s) };
+      } else {
+        return { ...p, stories: [...p.stories, { ...sf, id: uid(), hours: sf.hours ? Number(sf.hours) : null }] };
+      }
+    }));
+    setSf({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' });
+    setStoryModal(null);
+  };
 
-  const COLORS = ['#6366f1','#f59e0b','#ec4899','#14b8a6','#8b5cf6','#ef4444','#3b82f6','#22c55e'];
+  const handleDeleteStory = (projId, storyId) => {
+    setProjects(projects.map(p => p.id === projId ? { ...p, stories: p.stories.filter(s => s.id !== storyId) } : p));
+  };
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-8">
-        <div><h2 className="text-2xl font-bold text-gray-900">Projetos da Release</h2><p className="text-gray-500 text-sm mt-1">A borda colorida indica o nível de risco do DoR</p></div>
-        <Btn onClick={() => { setEditProjId(null); setPf({ name: '', color: '#6366f1', startDate: '', endDate: '' }); setProjModal(true); }}><Plus size={16}/> Novo Projeto</Btn>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-gray-900">Projetos</h2>
+        <Btn onClick={() => { setPf({ name: '', color: '#6366f1', startDate: '', endDate: '' }); setEditProjId(null); setProjModal(true); }}>
+          <Plus size={16} /> Novo Projeto
+        </Btn>
       </div>
+
+      <Modal open={projModal} onClose={() => setProjModal(false)} title={editProjId ? 'Editar Projeto' : 'Novo Projeto'}>
+        <Input label="Nome" value={pf.name} onChange={(e) => setPf({ ...pf, name: e.target.value })} placeholder="ex: API Backend" />
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-2">Cor</label>
+          <div className="flex gap-2 flex-wrap">
+            {['#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#8b5cf6', '#ef4444', '#3b82f6', '#22c55e'].map(c => (
+              <button key={c} onClick={() => setPf({ ...pf, color: c })} className={`w-8 h-8 rounded-lg border-2 ${pf.color === c ? 'border-gray-900' : 'border-transparent'}`} style={{ backgroundColor: c }} />
+            ))}
+          </div>
+        </div>
+        <Input label="Data de Início" type="date" value={pf.startDate} onChange={(e) => setPf({ ...pf, startDate: e.target.value })} />
+        <Input label="Data de Término" type="date" value={pf.endDate} onChange={(e) => setPf({ ...pf, endDate: e.target.value })} />
+        <div className="flex gap-2">
+          <Btn variant="primary" onClick={handleSaveProj}>{editProjId ? 'Salvar' : 'Criar'}</Btn>
+          <Btn variant="secondary" onClick={() => setProjModal(false)}>Cancelar</Btn>
+        </div>
+      </Modal>
+
       <div className="space-y-6">
-        {projects.map((p) => {
-          const r = dorRisk(p); const rs = RISK_STYLES[r];
-          const totalH   = p.stories.reduce((a, s) => a + (s.hours ?? 0), 0);
-          const dorCount = p.stories.filter((s) => s.hours).length;
+        {projects.map(proj => {
+          const risk = dorRisk(proj);
+          const riskStyle = RISK_STYLES[risk];
           return (
-            <div key={p.id} className={`bg-white rounded-2xl overflow-hidden ${rs.card}`}>
-              <div className="px-6 py-5 border-b border-gray-50 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-3.5 h-3.5 rounded-full shrink-0" style={{backgroundColor:p.color}}/>
-                  <h3 className="font-semibold text-gray-900">{p.name}</h3>
-                  <span className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg font-medium ${rs.badge}`}><rs.icon size={11} className={rs.iconColor}/>{rs.label}</span>
-                  <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md">{dorCount}/{p.stories.length} DoR · {totalH}h</span>
+            <div key={proj.id} className={`bg-white rounded-2xl shadow-sm overflow-hidden ${riskStyle.card}`}>
+              <div className="px-6 py-4 border-b border-gray-100 flex items-start justify-between">
+                <div className="flex items-start gap-4">
+                  <div className="w-4 h-4 rounded-lg mt-1" style={{ backgroundColor: proj.color }} />
+                  <div>
+                    <h3 className="font-semibold text-gray-900">{proj.name}</h3>
+                    <p className="text-xs text-gray-500">{fmtDate(proj.startDate)} – {fmtDate(proj.endDate)}</p>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {p.startDate && <span className="text-xs text-gray-400"><Calendar size={12} className="inline mr-1"/>{fmtDate(p.startDate)} – {fmtDate(p.endDate)}</span>}
-                  <Btn variant="secondary" onClick={() => { setSf({ title:'',assignee:'',hours:'',description:'' }); setStoryModal(p.id); }}><Plus size={15}/>História</Btn>
-                  <Btn variant="ghost" onClick={() => { setEditProjId(p.id); setPf({ name: p.name, color: p.color, startDate: p.startDate, endDate: p.endDate }); setProjModal(true); }}><Edit3 size={15}/></Btn>
-                  <Btn variant="danger" onClick={() => removeProject(p.id)}><Trash2 size={15}/></Btn>
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${riskStyle.badge}`}>{riskStyle.label}</span>
+                  <button onClick={() => { setPf(proj); setEditProjId(proj.id); setProjModal(true); }} className="p-2 hover:bg-gray-100 rounded-lg"><Edit3 size={16} className="text-gray-600" /></button>
+                  <button onClick={() => handleDeleteProj(proj.id)} className="p-2 hover:bg-red-50 rounded-lg"><Trash2 size={16} className="text-red-600" /></button>
                 </div>
               </div>
-              <div className="divide-y divide-gray-50">
-                {p.stories.length === 0 && <p className="text-sm text-gray-400 text-center py-8">Nenhuma história cadastrada</p>}
-                {p.stories.map((s) => {
-                  const isDor = !!s.hours;
-                  const assigneeMember = members.find((m) => m.id === s.assignee);
-                  const isExpanded = expandedStories[s.id];
-                  return (
-                    <div key={s.id} className="px-6 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <div title={isDor ? 'Em DoR' : 'Sem estimativa – não está em DoR'}>
-                          {isDor ? <CheckCircle2 size={18} className="text-green-500 shrink-0"/> : <AlertCircle size={18} className="text-red-400 shrink-0"/>}
+
+              <div className="px-6 py-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="font-medium text-gray-900">Histórias ({proj.stories.length})</h4>
+                  <Btn variant="secondary" size="sm" onClick={() => { setSf({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' }); setStoryModal(null); }} onClick={() => { setSf({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' }); setStoryModal('new:' + proj.id); }}>
+                    <Plus size={14} /> Story
+                  </Btn>
+                </div>
+
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {proj.stories.map(story => (
+                    <div key={story.id} className="p-3 bg-gray-50 rounded-xl border border-gray-100 flex items-start gap-3 group hover:bg-gray-100/50">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="font-medium text-gray-900 truncate text-sm">{story.title}</p>
+                          {story.type && ITEM_TYPE_STYLES[story.type] && (
+                            <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${ITEM_TYPE_STYLES[story.type].badge}`}>
+                              {ITEM_TYPE_STYLES[story.type].label}
+                            </span>
+                          )}
                         </div>
-                        <button className="flex items-center gap-1.5 text-sm font-medium text-gray-700 hover:text-indigo-600 transition-colors text-left flex-1" onClick={() => toggleStory(s.id)}>
-                          {s.title}
-                          {(s.description || true) && (isExpanded ? <ChevronUp size={14} className="text-gray-400"/> : <ChevronDown size={14} className="text-gray-400"/>)}
-                        </button>
-                        <div className="flex items-center gap-1.5">
-                          <input type="number" value={s.hours ?? ''} placeholder="horas?" onChange={(e) => updateHours(p.id, s.id, e.target.value)}
-                            className="w-20 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
-                          <span className="text-xs text-gray-400">h</span>
-                        </div>
-                        <select value={s.assignee} onChange={(e) => updateAssignee(p.id, s.id, e.target.value)}
-                          className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400 min-w-[130px]">
-                          <option value="">Sem responsável</option>
-                          {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                        </select>
-                        {assigneeMember && <Avatar name={assigneeMember.name} avatarUrl={assigneeMember.avatarUrl} size={26}/>}
-                        {/* Sprint selector inline */}
-                        <select value={s.sprintId || ''} onChange={(e) => updateStorySprint(p.id, s.id, e.target.value)}
-                          title="Sprint desta história"
-                          className="text-xs border border-indigo-200 bg-indigo-50 text-indigo-700 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-400 min-w-[90px]">
-                          <option value="">Sem sprint</option>
-                          {sprints.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
-                        </select>
-                        {!isDor && <span className="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded-md font-medium whitespace-nowrap">Não DoR</span>}
-                        <button onClick={() => removeStory(p.id, s.id)} className="text-gray-300 hover:text-red-500 transition-colors ml-1"><Trash2 size={15}/></button>
+                        <p className="text-xs text-gray-500">{story.assignee ? members.find(m => m.id === story.assignee)?.name : '–'} • Sprint: {story.sprintId ? sprints.find(s => s.id === story.sprintId)?.name : '–'}</p>
                       </div>
-                      {isExpanded && (
-                        <div className="mt-2.5 ml-7 p-3.5 bg-gray-50 rounded-xl text-sm text-gray-600 border border-gray-100">
-                          {s.description ? s.description : <span className="text-gray-400 italic">Sem descrição cadastrada.</span>}
-                        </div>
-                      )}
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-semibold text-gray-900">{story.hours || '–'}h</p>
+                      </div>
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => { setSf(story); setStoryModal(story.id); }} className="p-1.5 hover:bg-indigo-50 rounded-lg"><Edit3 size={14} className="text-indigo-600" /></button>
+                        <button onClick={() => handleDeleteStory(proj.id, story.id)} className="p-1.5 hover:bg-red-50 rounded-lg"><Trash2 size={14} className="text-red-600" /></button>
+                      </div>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
             </div>
           );
         })}
       </div>
-      <GanttTimeline projects={projects} members={members} sprints={sprints} />
-      {/* Project modal */}
-      <Modal open={projModal} onClose={() => setProjModal(false)} title={editProjId ? 'Editar Projeto' : 'Novo Projeto'}>
-        <Input label="Nome" value={pf.name} onChange={(e) => setPf((f) => ({...f, name: e.target.value}))}/>
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Data de início" type="date" value={pf.startDate} onChange={(e) => setPf((f) => ({...f, startDate: e.target.value}))}/>
-          <Input label="Data de fim"    type="date" value={pf.endDate}   onChange={(e) => setPf((f) => ({...f, endDate: e.target.value}))}/>
-        </div>
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Cor</label>
-          <div className="flex flex-wrap gap-2">{COLORS.map((c) => (
-            <button key={c} onClick={() => setPf((f) => ({...f, color: c}))}
-              className={`w-8 h-8 rounded-lg transition-all ${pf.color === c ? 'ring-2 ring-offset-2 ring-gray-400 scale-110' : 'hover:scale-105'}`} style={{backgroundColor:c}}/>
-          ))}</div>
-        </div>
-        <Btn className="w-full justify-center" onClick={saveProject}>{editProjId ? 'Salvar' : 'Criar Projeto'}</Btn>
-      </Modal>
-      {/* Story modal */}
-      <Modal open={!!storyModal} onClose={() => setStoryModal(null)} title="Nova História">
-        <Input label="Título" value={sf.title} onChange={(e) => setSf((f) => ({...f, title: e.target.value}))}/>
-        <Input label={<span>Estimativa de horas <span className="text-gray-400 font-normal">(opcional — obrigatório para DoR)</span></span>}
-          type="number" value={sf.hours} onChange={(e) => setSf((f) => ({...f, hours: e.target.value}))}/>
-        {!sf.hours && (
-          <div className="bg-red-50 rounded-xl p-3 -mt-1 mb-3 flex items-center gap-2 text-xs text-red-600">
-            <AlertCircle size={13}/> Sem estimativa → história não estará em DoR
-          </div>
+
+      <Modal open={storyModal ? true : false} onClose={() => setStoryModal(null)} title={storyModal?.startsWith('new:') ? 'Nova Histórias' : 'Editar Histórias'}>
+        {storyModal && (
+          <>
+            <Input label="Título" value={sf.title} onChange={(e) => setSf({ ...sf, title: e.target.value })} placeholder="ex: Implementar autenticação" />
+            <Sel label="Tipo" value={sf.type} onChange={(e) => setSf({ ...sf, type: e.target.value })}>
+              <option value="historia">História</option>
+              <option value="task">Task</option>
+              <option value="bug">Bug</option>
+            </Sel>
+            <Sel label="Atribuído para" value={sf.assignee} onChange={(e) => setSf({ ...sf, assignee: e.target.value })}>
+              <option value="">Ninguém</option>
+              {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </Sel>
+            <Sel label="Sprint" value={sf.sprintId} onChange={(e) => setSf({ ...sf, sprintId: e.target.value })}>
+              <option value="">Nenhuma</option>
+              {sprints.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </Sel>
+            <Input label="Estimativa (horas)" type="number" value={sf.hours} onChange={(e) => setSf({ ...sf, hours: e.target.value })} min={0} />
+            <Textarea label="Descrição" value={sf.description} onChange={(e) => setSf({ ...sf, description: e.target.value })} placeholder="Detalhes da história..." />
+            <div className="flex gap-2">
+              <Btn variant="primary" onClick={() => handleSaveStory(storyModal.startsWith('new:') ? storyModal.split(':')[1] : projects.find(p => p.stories.some(s => s.id === storyModal))?.id)}>
+                Salvar
+              </Btn>
+              <Btn variant="secondary" onClick={() => setStoryModal(null)}>Cancelar</Btn>
+            </div>
+          </>
         )}
-        <Sel label="Sprint" value={sf.sprintId} onChange={(e) => setSf((f) => ({...f, sprintId: e.target.value}))}>
-          <option value="">Sem sprint definida</option>
-          {sprints.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
-        </Sel>
-        <Sel label="Responsável" value={sf.assignee} onChange={(e) => setSf((f) => ({...f, assignee: e.target.value}))}>
-          <option value="">Sem responsável</option>
-          {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-        </Sel>
-        <Textarea label="Descrição (oculta por padrão)" value={sf.description} onChange={(e) => setSf((f) => ({...f, description: e.target.value}))}/>
-        <Btn className="w-full justify-center" onClick={saveStory}>Adicionar História</Btn>
       </Modal>
+
+      {projects.filter(p => p.startDate && p.endDate).length > 0 && <GanttTimeline projects={projects} members={members} sprints={sprints} />}
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════
-// OKRs / KPIs VIEW
+// OKR COMPONENTS
 // ═══════════════════════════════════════════════════════════════
-const FRENTES = [
-  { id: 'modernizacao',   label: 'Modernização',  color: '#6366f1', icon: Cpu      },
-  { id: 'experiencia',    label: 'Experiência',   color: '#ec4899', icon: Smile    },
-  { id: 'eficiencia',     label: 'Eficiência',    color: '#14b8a6', icon: Zap      },
-  { id: 'dados_analytics',label: 'D&A',           color: '#f59e0b', icon: PieChart },
-  { id: 'atendimento',    label: 'Atendimento',   color: '#3b82f6', icon: Headphones},
-];
-
 function OkrProgressBar({ baseline, moonshot, roofshot, atual, unit, lowerIsBetter }) {
-  // Normaliza para uma escala 0-100 onde 100 = roofshot
-  const min = lowerIsBetter ? roofshot : baseline;
-  const max = lowerIsBetter ? baseline : roofshot;
+  const min = Math.min(baseline, moonshot, roofshot, atual);
+  const max = Math.max(baseline, moonshot, roofshot, atual);
   const range = max - min || 1;
-  const pctAtual    = Math.min(100, Math.max(0, ((atual - min) / range) * 100));
-  const pctMoonshot = Math.min(100, Math.max(0, ((moonshot - min) / range) * 100));
+  const toPos = (v) => ((v - min) / range) * 100;
 
-  const atualColor = lowerIsBetter
-    ? (atual <= moonshot ? '#22c55e' : atual <= baseline ? '#f59e0b' : '#ef4444')
-    : (atual >= moonshot ? '#22c55e' : atual >= baseline ? '#f59e0b' : '#ef4444');
+  const baselinePos = toPos(baseline);
+  const moonshotPos = toPos(moonshot);
+  const roofshotPos = toPos(roofshot);
+  const atualPos = toPos(atual);
 
   return (
-    <div className="mt-3">
-      {/* Track — overflow hidden para não vazar o fill */}
-      <div className="relative h-3 bg-gray-100 rounded-full overflow-hidden">
-        {/* Fill */}
-        <div className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pctAtual}%`, backgroundColor: atualColor }}/>
+    <div className="space-y-2">
+      <div className="relative h-8 bg-gray-100 rounded-full overflow-hidden">
+        <div className="absolute left-0 right-0 top-0 bottom-0 flex items-center px-3 pointer-events-none">
+          <div className="absolute h-0.5 bg-gray-200" style={{ left: `${baselinePos}%`, right: 0 }} />
+        </div>
+        <div className="absolute top-1 h-6" style={{ left: `${moonshotPos}%`, transform: 'translateX(-50%)' }}>
+          <div className="w-0.5 h-full bg-indigo-400" />
+        </div>
+        <div className="absolute top-1 h-6" style={{ left: `${roofshotPos}%`, transform: 'translateX(-50%)' }}>
+          <div className="w-0.5 h-full bg-indigo-600" />
+        </div>
+        <div className="absolute top-1 h-6" style={{ left: `${atualPos}%`, transform: 'translateX(-50%)' }}>
+          <div className="w-1 h-full bg-green-500 rounded-full" />
+        </div>
       </div>
-      {/* Moonshot marker line (fora do overflow hidden) */}
-      <div className="relative h-0">
-        <div className="absolute w-0.5 bg-violet-400 z-10"
-          style={{ left: `${pctMoonshot}%`, top: '-12px', height: '12px' }}/>
-        {/* Atual bubble */}
-        <div className="absolute w-4 h-4 rounded-full border-2 border-white shadow z-20 -translate-x-1/2"
-          style={{ left: `${pctAtual}%`, top: '-20px', backgroundColor: atualColor }}/>
-      </div>
-      {/* Labels */}
-      <div className="flex justify-between text-xs text-gray-400 mt-3">
-        <span>Base: {baseline}{unit}</span>
-        <span className="text-violet-500 font-medium">Meta: {moonshot}{unit}</span>
-        <span className="font-semibold" style={{ color: atualColor }}>Atual: {atual}{unit}</span>
-        <span>Roof: {roofshot}{unit}</span>
+      <div className="flex justify-between text-xs text-gray-500">
+        <span>Baseline: {baseline}{unit}</span>
+        <span>Moonshot: {moonshot}{unit}</span>
+        <span>Roofshot: {roofshot}{unit}</span>
+        <span className="font-semibold text-gray-900">Atual: {atual}{unit}</span>
       </div>
     </div>
   );
 }
 
 function OkrCard({ okr, projects, onEdit, onDelete }) {
-  const frente = FRENTES.find((f) => f.id === okr.frente) || { label: okr.frente, color: '#6b7280', icon: Target };
-  const FrenteIcon = frente.icon;
-  const project = projects.find((p) => p.id === okr.projectId);
-  const isKR = okr.tipo === 'KR';
-
+  const project = projects.find(p => p.id === okr.projectId);
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
-      {/* Top accent */}
-      <div className="h-1" style={{ backgroundColor: frente.color }}/>
-      <div className="p-5">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className={`text-xs font-bold px-2.5 py-1 rounded-lg ${isKR ? 'bg-violet-100 text-violet-700' : 'bg-indigo-100 text-indigo-700'}`}>
-              {isKR ? 'KR' : 'KPI'}
+    <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${okr.tipo === 'O' ? 'bg-indigo-100 text-indigo-700' : 'bg-purple-100 text-purple-700'}`}>
+              {okr.tipo === 'O' ? 'Objetivo' : 'Key Result'}
             </span>
-            <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg font-medium"
-              style={{ backgroundColor: frente.color + '18', color: frente.color }}>
-              <FrenteIcon size={11}/>{frente.label}
-            </span>
-            {project && (
-              <span className="text-xs px-2 py-0.5 rounded-md bg-gray-50 text-gray-500 border border-gray-100">
-                <div className="w-1.5 h-1.5 rounded-full inline-block mr-1" style={{ backgroundColor: project.color }}/>
-                {project.name}
-              </span>
-            )}
+            <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">{okr.frente || '–'}</span>
           </div>
-          <div className="flex gap-1 shrink-0">
-            <button onClick={onEdit} className="text-gray-300 hover:text-indigo-500 transition-colors"><Edit3 size={14}/></button>
-            <button onClick={onDelete} className="text-gray-300 hover:text-red-500 transition-colors"><Trash2 size={14}/></button>
-          </div>
+          <h4 className="font-semibold text-gray-900">{okr.title}</h4>
+          {project && <p className="text-xs text-gray-500 mt-1">{project.name}</p>}
         </div>
-        {/* Title */}
-        <h4 className="font-semibold text-gray-900 text-sm leading-snug mb-1">{okr.title}</h4>
-        {okr.description && <p className="text-xs text-gray-400 mb-3 line-clamp-2">{okr.description}</p>}
-        {/* Moonshot / Roofshot targets */}
-        <div className="grid grid-cols-3 gap-2 mb-2">
-          {[
-            { label: 'Baseline',  val: okr.baseline,  bg: 'bg-gray-50',    txt: 'text-gray-600'  },
-            { label: 'Moonshot',  val: okr.moonshot,  bg: 'bg-violet-50',  txt: 'text-violet-700'},
-            { label: 'Roofshot',  val: okr.roofshot,  bg: 'bg-emerald-50', txt: 'text-emerald-700'},
-          ].map(({ label, val, bg, txt }) => (
-            <div key={label} className={`${bg} rounded-xl p-2 text-center`}>
-              <p className="text-xs text-gray-400 mb-0.5">{label}</p>
-              <p className={`text-sm font-bold ${txt}`}>{val}{okr.unit}</p>
-            </div>
-          ))}
+        <div className="flex gap-1">
+          <button onClick={onEdit} className="p-2 hover:bg-gray-100 rounded-lg"><Edit3 size={16} className="text-gray-600" /></button>
+          <button onClick={onDelete} className="p-2 hover:bg-red-50 rounded-lg"><Trash2 size={16} className="text-red-600" /></button>
         </div>
-        <OkrProgressBar {...okr}/>
       </div>
+      <OkrProgressBar baseline={okr.baseline} moonshot={okr.moonshot} roofshot={okr.roofshot} atual={okr.atual} unit={okr.unit} lowerIsBetter={okr.lowerIsBetter} />
+      {okr.description && <p className="text-xs text-gray-600 mt-3">{okr.description}</p>}
     </div>
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// OKRS VIEW
+// ═══════════════════════════════════════════════════════════════
 function OKRsView({ okrs, setOkrs, projects }) {
   const [modal, setModal]   = useState(false);
   const [editId, setEditId] = useState(null);
   const [filterFrente, setFilterFrente] = useState('all');
   const [filterTipo,   setFilterTipo]   = useState('all');
-  const emptyForm = { tipo: 'KR', frente: 'modernizacao', title: '', projectId: '', baseline: 0, moonshot: 0, roofshot: 0, atual: 0, unit: '%', description: '', lowerIsBetter: false };
-  const [form, setForm] = useState(emptyForm);
-  const ff = (key, val) => setForm((f) => ({ ...f, [key]: val }));
 
-  const openNew  = () => { setEditId(null); setForm(emptyForm); setModal(true); };
-  const openEdit = (okr) => {
-    setEditId(okr.id);
-    setForm({ tipo: okr.tipo, frente: okr.frente, title: okr.title, projectId: okr.projectId, baseline: okr.baseline, moonshot: okr.moonshot, roofshot: okr.roofshot, atual: okr.atual, unit: okr.unit, description: okr.description, lowerIsBetter: okr.lowerIsBetter });
-    setModal(true);
-  };
-  const save = () => {
-    if (!form.title.trim()) return;
-    if (editId) { setOkrs((o) => o.map((x) => x.id === editId ? { ...x, ...form } : x)); setEditId(null); }
-    else        { setOkrs((o) => [...o, { id: uid(), ...form }]); }
+  const emptyForm = { tipo: 'KR', frente: '', title: '', projectId: '', baseline: 0, moonshot: 0, roofshot: 0, atual: 0, unit: '%', description: '', lowerIsBetter: false };
+  const [form, setForm] = useState(emptyForm);
+
+  const handleSave = () => {
+    if (!form.title) return;
+    if (editId) {
+      setOkrs(okrs.map(o => o.id === editId ? { ...form, id: editId } : o));
+    } else {
+      setOkrs([...okrs, { ...form, id: uid() }]);
+    }
+    setForm(emptyForm);
+    setEditId(null);
     setModal(false);
   };
-  const remove = (id) => setOkrs((o) => o.filter((x) => x.id !== id));
 
-  const filtered = okrs.filter((o) =>
-    (filterFrente === 'all' || o.frente === filterFrente) &&
-    (filterTipo   === 'all' || o.tipo   === filterTipo)
-  );
+  const handleEdit = (okr) => {
+    setForm(okr);
+    setEditId(okr.id);
+    setModal(true);
+  };
 
-  // Stats
-  const krCount  = okrs.filter((o) => o.tipo === 'KR').length;
-  const kpiCount = okrs.filter((o) => o.tipo === 'KPI').length;
-  const onTrack  = okrs.filter((o) => {
-    const pct = o.roofshot !== o.baseline ? Math.abs((o.atual - o.baseline) / (o.roofshot - o.baseline)) : 0;
-    return pct >= 0.5;
-  }).length;
+  const handleDelete = (id) => {
+    setOkrs(okrs.filter(o => o.id !== id));
+  };
+
+  const filtered = okrs.filter(o => {
+    if (filterFrente !== 'all' && o.frente !== filterFrente) return false;
+    if (filterTipo !== 'all' && o.tipo !== filterTipo) return false;
+    return true;
+  });
+
+  const frentes = FRENTES;
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">OKRs & KPIs da Release</h2>
-          <p className="text-gray-500 text-sm mt-1">Acompanhe Key Results e indicadores por frente estratégica</p>
-        </div>
-        <Btn onClick={openNew}><Plus size={16}/> Novo OKR / KPI</Btn>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-gray-900">OKRs</h2>
+        <Btn onClick={() => { setForm(emptyForm); setEditId(null); setModal(true); }}>
+          <Plus size={16} /> Novo OKR
+        </Btn>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard icon={Target}       label="Total OKRs/KPIs"  value={okrs.length}   sub={`${krCount} KRs · ${kpiCount} KPIs`}      color="#6366f1"/>
-        <StatCard icon={TrendingUp}   label="No Caminho"        value={onTrack}       sub={`de ${okrs.length} indicadores`}            color="#22c55e"/>
-        <StatCard icon={Star}         label="Frentes Ativas"   value={[...new Set(okrs.map((o) => o.frente))].length} sub="frentes cobertas"  color="#f59e0b"/>
-        <StatCard icon={FolderKanban} label="Projetos com OKR" value={[...new Set(okrs.map((o) => o.projectId).filter(Boolean))].length} sub="projetos vinculados" color="#14b8a6"/>
-      </div>
-
-      {/* Frente pills */}
-      <div className="flex flex-wrap gap-2 mb-5">
-        <button onClick={() => setFilterFrente('all')}
-          className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all border ${filterFrente === 'all' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-400'}`}>
-          Todas as frentes
-        </button>
-        {FRENTES.map((f) => {
-          const FIcon = f.icon;
-          const active = filterFrente === f.id;
-          return (
-            <button key={f.id} onClick={() => setFilterFrente(active ? 'all' : f.id)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all border"
-              style={active ? { backgroundColor: f.color, color: '#fff', borderColor: f.color } : { backgroundColor: f.color + '18', color: f.color, borderColor: f.color + '44' }}>
-              <FIcon size={11}/>{f.label}
-            </button>
-          );
-        })}
-        <div className="ml-auto flex gap-2">
-          {['all','KR','KPI'].map((t) => (
-            <button key={t} onClick={() => setFilterTipo(t)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-all ${filterTipo === t ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-gray-500 border-gray-200 hover:border-violet-300'}`}>
-              {t === 'all' ? 'KR + KPI' : t}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Grid of OKR cards */}
-      {filtered.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          <Target size={40} className="mx-auto mb-3 opacity-30"/>
-          <p className="font-medium">Nenhum OKR/KPI cadastrado</p>
-          <p className="text-sm mt-1">Clique em "Novo OKR / KPI" para começar</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-          {filtered.map((okr) => (
-            <OkrCard key={okr.id} okr={okr} projects={projects}
-              onEdit={() => openEdit(okr)}
-              onDelete={() => remove(okr.id)}/>
-          ))}
-        </div>
-      )}
-
-      {/* Modal */}
-      <Modal open={modal} onClose={() => setModal(false)} title={editId ? 'Editar OKR / KPI' : 'Novo OKR / KPI'}>
-        <div className="grid grid-cols-2 gap-3">
-          <Sel label="Tipo" value={form.tipo} onChange={(e) => ff('tipo', e.target.value)}>
-            <option value="KR">KR — Key Result</option>
-            <option value="KPI">KPI — Indicador</option>
-          </Sel>
-          <Sel label="Frente" value={form.frente} onChange={(e) => ff('frente', e.target.value)}>
-            {FRENTES.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
-          </Sel>
-        </div>
-        <Input label="Título" value={form.title} onChange={(e) => ff('title', e.target.value)}/>
-        <Sel label="Projeto vinculado" value={form.projectId} onChange={(e) => ff('projectId', e.target.value)}>
-          <option value="">Sem projeto vinculado</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+      <div className="flex gap-3 flex-wrap mb-6">
+        <Sel value={filterFrente} onChange={(e) => setFilterFrente(e.target.value)}>
+          <option value="all">Todas as frentes</option>
+          {frentes.map(f => <option key={f} value={f}>{f}</option>)}
         </Sel>
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Unidade (%,pts,min…)" value={form.unit} onChange={(e) => ff('unit', e.target.value)}/>
-          <div className="mb-4 flex items-center gap-2 pt-7">
-            <input type="checkbox" id="lib" checked={form.lowerIsBetter}
-              onChange={(e) => ff('lowerIsBetter', e.target.checked)}
-              className="w-4 h-4 rounded text-indigo-600"/>
-            <label htmlFor="lib" className="text-sm text-gray-700">Menor é melhor</label>
-          </div>
+        <Sel value={filterTipo} onChange={(e) => setFilterTipo(e.target.value)}>
+          <option value="all">Ambos (O e KR)</option>
+          <option value="O">Apenas Objetivos</option>
+          <option value="KR">Apenas Key Results</option>
+        </Sel>
+      </div>
+
+      <Modal open={modal} onClose={() => setModal(false)} title={editId ? 'Editar OKR' : 'Novo OKR'}>
+        <Sel label="Tipo" value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
+          <option value="O">Objetivo</option>
+          <option value="KR">Key Result</option>
+        </Sel>
+        <Sel label="Frente" value={form.frente} onChange={(e) => setForm({ ...form, frente: e.target.value })}>
+          <option value="">Nenhuma</option>
+          {frentes.map(f => <option key={f} value={f}>{f}</option>)}
+        </Sel>
+        <Input label="Título" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="ex: Aumentar receita..." />
+        <Sel label="Projeto (opcional)" value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
+          <option value="">Nenhum</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </Sel>
+        <Input label="Baseline" type="number" value={form.baseline} onChange={(e) => setForm({ ...form, baseline: Number(e.target.value) })} />
+        <Input label="Moonshot" type="number" value={form.moonshot} onChange={(e) => setForm({ ...form, moonshot: Number(e.target.value) })} />
+        <Input label="Roofshot" type="number" value={form.roofshot} onChange={(e) => setForm({ ...form, roofshot: Number(e.target.value) })} />
+        <Input label="Atual" type="number" value={form.atual} onChange={(e) => setForm({ ...form, atual: Number(e.target.value) })} />
+        <Input label="Unidade" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="%, unid., etc" />
+        <Textarea label="Descrição (opcional)" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        <div className="mb-4 flex items-center gap-3">
+          <input type="checkbox" id="lower" checked={form.lowerIsBetter} onChange={(e) => setForm({ ...form, lowerIsBetter: e.target.checked })} />
+          <label htmlFor="lower" className="text-sm text-gray-700">Quanto menor, melhor</label>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Baseline (ponto de partida)" type="number" value={form.baseline} onChange={(e) => ff('baseline', Number(e.target.value))}/>
-          <Input label="Atual" type="number" value={form.atual} onChange={(e) => ff('atual', Number(e.target.value))}/>
+        <div className="flex gap-2">
+          <Btn variant="primary" onClick={handleSave}>{editId ? 'Salvar' : 'Criar'}</Btn>
+          <Btn variant="secondary" onClick={() => setModal(false)}>Cancelar</Btn>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Input label="Moonshot (meta ambiciosa)" type="number" value={form.moonshot} onChange={(e) => ff('moonshot', Number(e.target.value))}/>
-            <p className="text-xs text-violet-500 -mt-2 mb-2">Marcado na barra de progresso</p>
-          </div>
-          <div>
-            <Input label="Roofshot (teto/máximo)" type="number" value={form.roofshot} onChange={(e) => ff('roofshot', Number(e.target.value))}/>
-            <p className="text-xs text-emerald-500 -mt-2 mb-2">Extremo da escala</p>
-          </div>
-        </div>
-        <Textarea label="Descrição" value={form.description} onChange={(e) => ff('description', e.target.value)}/>
-        <Btn className="w-full justify-center" onClick={save}>{editId ? 'Salvar' : 'Adicionar OKR / KPI'}</Btn>
       </Modal>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {filtered.map(okr => (
+          <OkrCard
+            key={okr.id}
+            okr={okr}
+            projects={projects}
+            onEdit={() => handleEdit(okr)}
+            onDelete={() => handleDelete(okr.id)}
+          />
+        ))}
+      </div>
+
+      {filtered.length === 0 && <div className="text-center py-12"><p className="text-gray-500">Nenhum OKR encontrado com esses filtros.</p></div>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONFIG VIEW
+// ═══════════════════════════════════════════════════════════════
+function ConfigView({ holidays, setHolidays, vacations, setVacations, members, absences, setAbsences }) {
+  const [holidayDate, setHolidayDate] = useState('');
+  const [vacationMemberId, setVacationMemberId] = useState('');
+  const [vacationStart, setVacationStart] = useState('');
+  const [vacationEnd, setVacationEnd] = useState('');
+  const [absenceMemberId, setAbsenceMemberId] = useState('');
+  const [absenceDate, setAbsenceDate] = useState('');
+  const [absenceType, setAbsenceType] = useState('day_off');
+
+  const handleAddHoliday = () => {
+    if (!holidayDate) return;
+    setHolidays([...holidays, { id: uid(), date: holidayDate }]);
+    setHolidayDate('');
+  };
+
+  const handleAddVacation = () => {
+    if (!vacationMemberId || !vacationStart || !vacationEnd) return;
+    setVacations([...vacations, { id: uid(), memberId: vacationMemberId, startDate: vacationStart, endDate: vacationEnd }]);
+    setVacationMemberId('');
+    setVacationStart('');
+    setVacationEnd('');
+  };
+
+  const handleAddAbsence = () => {
+    if (!absenceMemberId || !absenceDate) return;
+    setAbsences([...absences, { id: uid(), memberId: absenceMemberId, date: absenceDate, type: absenceType }]);
+    setAbsenceMemberId('');
+    setAbsenceDate('');
+    setAbsenceType('day_off');
+  };
+
+  const holidaysSorted = useMemo(() => [...holidays].sort((a, b) => a.date.localeCompare(b.date)), [holidays]);
+  const vacationsSorted = useMemo(() => [...vacations].sort((a, b) => a.startDate.localeCompare(b.startDate)), [vacations]);
+  const absencesSorted = useMemo(() => [...absences].sort((a, b) => a.date.localeCompare(b.date)), [absences]);
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+        <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+          <CalendarX2 size={18} className="text-indigo-600" />
+          Feriados
+        </h3>
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <input type="date" value={holidayDate} onChange={(e) => setHolidayDate(e.target.value)} className={inputCls} />
+            <Btn variant="primary" onClick={handleAddHoliday}>Adicionar</Btn>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-gray-200">
+                <tr>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Data</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {holidaysSorted.map(h => (
+                  <tr key={h.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 px-3 text-gray-900">{fmtDate(h.date)}</td>
+                    <td className="py-2 px-3 text-right">
+                      <button onClick={() => setHolidays(holidays.filter(x => x.id !== h.id))} className="text-red-600 hover:text-red-700 text-xs">
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {holidaysSorted.length === 0 && <p className="text-gray-500 text-sm py-4">Nenhum feriado cadastrado</p>}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+        <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+          <TreePine size={18} className="text-indigo-600" />
+          Férias
+        </h3>
+        <div className="space-y-4">
+          <div className="grid grid-cols-4 gap-2">
+            <Sel value={vacationMemberId} onChange={(e) => setVacationMemberId(e.target.value)}>
+              <option value="">Membro</option>
+              {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </Sel>
+            <input type="date" value={vacationStart} onChange={(e) => setVacationStart(e.target.value)} className={inputCls} placeholder="Início" />
+            <input type="date" value={vacationEnd} onChange={(e) => setVacationEnd(e.target.value)} className={inputCls} placeholder="Fim" />
+            <Btn variant="primary" onClick={handleAddVacation}>Adicionar</Btn>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-gray-200">
+                <tr>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Membro</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Início</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Fim</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vacationsSorted.map(v => (
+                  <tr key={v.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 px-3 text-gray-900">{members.find(m => m.id === v.memberId)?.name || v.memberId}</td>
+                    <td className="py-2 px-3 text-gray-600">{fmtDate(v.startDate)}</td>
+                    <td className="py-2 px-3 text-gray-600">{fmtDate(v.endDate)}</td>
+                    <td className="py-2 px-3 text-right">
+                      <button onClick={() => setVacations(vacations.filter(x => x.id !== v.id))} className="text-red-600 hover:text-red-700 text-xs">
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {vacationsSorted.length === 0 && <p className="text-gray-500 text-sm py-4">Nenhuma férias cadastrada</p>}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+        <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+          <Clock size={18} className="text-indigo-600" />
+          Ausências Rápidas
+        </h3>
+        <div className="space-y-4">
+          <div className="grid grid-cols-5 gap-2">
+            <Sel value={absenceMemberId} onChange={(e) => setAbsenceMemberId(e.target.value)}>
+              <option value="">Membro</option>
+              {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </Sel>
+            <input type="date" value={absenceDate} onChange={(e) => setAbsenceDate(e.target.value)} className={inputCls} />
+            <Sel value={absenceType} onChange={(e) => setAbsenceType(e.target.value)}>
+              <option value="day_off">Dia Livre</option>
+              <option value="treinamento">Treinamento</option>
+              <option value="consulta">Consulta</option>
+            </Sel>
+            <Btn variant="primary" onClick={handleAddAbsence}>Adicionar</Btn>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-gray-200">
+                <tr>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Membro</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Data</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Tipo</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {absencesSorted.map(a => (
+                  <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 px-3 text-gray-900">{members.find(m => m.id === a.memberId)?.name || a.memberId}</td>
+                    <td className="py-2 px-3 text-gray-600">{fmtDate(a.date)}</td>
+                    <td className="py-2 px-3 text-gray-600 capitalize">{a.type.replace('_', ' ')}</td>
+                    <td className="py-2 px-3 text-right">
+                      <button onClick={() => setAbsences(absences.filter(x => x.id !== a.id))} className="text-red-600 hover:text-red-700 text-xs">
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {absencesSorted.length === 0 && <p className="text-gray-500 text-sm py-4">Nenhuma ausência cadastrada</p>}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════
 // FILE PICKER SCREEN
-// Exibida quando nenhum arquivo está carregado
 // ═══════════════════════════════════════════════════════════════
 function FilePickerScreen({ onOpenFile, onNewFile, onNewFileWithDemo, error, isElectron, squadName, onSquadNameChange }) {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 flex items-center justify-center p-8">
-      <div className="max-w-lg w-full">
-        {/* Logo */}
-        <div className="flex items-center gap-4 mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-200">
-            <Layers size={28} className="text-white" />
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+          <div className="flex justify-center mb-6">
+            <div className="w-16 h-16 bg-indigo-100 rounded-2xl flex items-center justify-center">
+              <FolderKanban size={32} className="text-indigo-600" />
+            </div>
           </div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900 leading-tight">Controle de</h1>
-            <h1 className="text-2xl font-bold text-indigo-600 leading-tight">Jornada</h1>
+          <h1 className="text-2xl font-bold text-gray-900 text-center mb-2">QBR Manager</h1>
+          <p className="text-center text-gray-600 mb-8">Gerencie sprints, equipe, projetos e OKRs</p>
+
+          {!isElectron && (
+            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-xl">
+              <p className="text-sm text-yellow-800">Modo Demo: Funcionando em navegador sem Electron</p>
+            </div>
+          )}
+
+          {error && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+              <p className="text-sm text-red-800">{error}</p>
+            </div>
+          )}
+
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Nome do Squad</label>
+            <input type="text" value={squadName} onChange={(e) => onSquadNameChange(e.target.value)} className={inputCls} placeholder="ex: Squad Backend" />
           </div>
+
+          <div className="space-y-3">
+            {isElectron && (
+              <>
+                <Btn className="w-full" onClick={onOpenFile}>
+                  <FolderOpen size={16} /> Abrir Arquivo
+                </Btn>
+                <Btn className="w-full" variant="secondary" onClick={onNewFile}>
+                  <FilePlus2 size={16} /> Novo Arquivo
+                </Btn>
+              </>
+            )}
+            <Btn className="w-full" variant={isElectron ? 'secondary' : 'primary'} onClick={onNewFileWithDemo}>
+              <Database size={16} /> {isElectron ? 'Demo com Dados' : 'Começar Demo'}
+            </Btn>
+          </div>
+
+          <p className="text-center text-xs text-gray-500 mt-6">Todos os dados são salvos automaticamente no arquivo Excel</p>
         </div>
-
-        {/* Squad name input */}
-        <div className="mb-7">
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
-            Nome da Squad <span className="text-gray-400 font-normal">(opcional)</span>
-          </label>
-          <input
-            type="text"
-            value={squadName}
-            onChange={(e) => onSquadNameChange(e.target.value)}
-            placeholder="Ex: Squad Pagamentos, Time Plataforma..."
-            className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent text-sm text-gray-800 placeholder-gray-300 bg-white"
-          />
-          <p className="text-xs text-gray-400 mt-1.5">Aparecerá no menu lateral no lugar de "Controle de Jornada"</p>
-        </div>
-
-        <h2 className="text-xl font-semibold text-gray-900 mb-2">Selecione sua Base de Dados</h2>
-        <p className="text-gray-500 mb-8 text-sm">
-          Todos os dados são armazenados em um arquivo Excel (.xlsx) local — sem servidor, sem nuvem, 100% seu.
-        </p>
-
-        {!isElectron && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-start gap-3">
-            <AlertTriangle size={16} className="text-amber-500 mt-0.5 shrink-0" />
-            <p className="text-xs text-amber-700">
-              <strong>Modo navegador detectado.</strong> Para persistência real no Excel, rode a aplicação via Electron.
-              Neste modo, os dados ficam apenas em memória.
-            </p>
-          </div>
-        )}
-
-        <div className="space-y-3">
-          <button
-            onClick={onOpenFile}
-            className="w-full flex items-center gap-4 p-5 bg-white rounded-2xl border-2 border-gray-200 hover:border-indigo-400 hover:shadow-md hover:shadow-indigo-100 transition-all group"
-          >
-            <div className="w-12 h-12 rounded-xl bg-indigo-50 flex items-center justify-center group-hover:bg-indigo-100 transition-colors">
-              <FolderOpen size={22} className="text-indigo-600" />
-            </div>
-            <div className="text-left">
-              <p className="font-semibold text-gray-900">Abrir arquivo existente</p>
-              <p className="text-sm text-gray-400">Carrega um .xlsx já preenchido anteriormente</p>
-            </div>
-          </button>
-
-          <button
-            onClick={onNewFileWithDemo}
-            className="w-full flex items-center gap-4 p-5 bg-white rounded-2xl border-2 border-gray-200 hover:border-green-400 hover:shadow-md hover:shadow-green-100 transition-all group"
-          >
-            <div className="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center group-hover:bg-green-100 transition-colors">
-              <Database size={22} className="text-green-600" />
-            </div>
-            <div className="text-left">
-              <p className="font-semibold text-gray-900">Criar arquivo com dados de exemplo</p>
-              <p className="text-sm text-gray-400">Inicia com sprints, equipe e projetos demo para ver tudo funcionando</p>
-            </div>
-          </button>
-
-          <button
-            onClick={onNewFile}
-            className="w-full flex items-center gap-4 p-5 bg-white rounded-2xl border-2 border-gray-200 hover:border-violet-400 hover:shadow-md hover:shadow-violet-100 transition-all group"
-          >
-            <div className="w-12 h-12 rounded-xl bg-violet-50 flex items-center justify-center group-hover:bg-violet-100 transition-colors">
-              <FilePlus2 size={22} className="text-violet-600" />
-            </div>
-            <div className="text-left">
-              <p className="font-semibold text-gray-900">Criar arquivo em branco</p>
-              <p className="text-sm text-gray-400">Gera o template vazio com as abas e colunas corretas</p>
-            </div>
-          </button>
-        </div>
-
-        {error && (
-          <div className="mt-5 bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
-            <AlertCircle size={16} className="text-red-500 mt-0.5 shrink-0" />
-            <p className="text-xs text-red-700">{error}</p>
-          </div>
-        )}
-
-        <p className="text-xs text-gray-400 mt-8 text-center">
-          <HardDrive size={12} className="inline mr-1" />
-          Os dados são salvos automaticamente no arquivo Excel a cada alteração
-        </p>
       </div>
     </div>
   );
@@ -1391,12 +1769,16 @@ function FilePickerScreen({ onOpenFile, onNewFile, onNewFileWithDemo, error, isE
 // ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// TABS
+// ═══════════════════════════════════════════════════════════════
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'sprints',   label: 'Sprints',   icon: Calendar        },
   { id: 'team',      label: 'Equipe',    icon: Users           },
   { id: 'projects',  label: 'Projetos',  icon: FolderKanban    },
   { id: 'okrs',      label: 'OKRs & KPIs', icon: Target        },
+  { id: 'config',    label: 'Configurações', icon: Settings2    },
 ];
 
 export default function App() {
@@ -1415,11 +1797,15 @@ export default function App() {
   const [lastSaved,  setLastSaved]  = useState(null);
 
   // ── App data state ─────────────────────────────────────────
-  const [tab,      setTab]      = useState('dashboard');
-  const [sprints,  setSprints]  = useState([]);
-  const [members,  setMembers]  = useState([]);
-  const [projects, setProjects] = useState([]);
-  const [okrs,     setOkrs]     = useState([]);
+  const [tab,             setTab]             = useState('dashboard');
+  const [sprints,         setSprints]         = useState([]);
+  const [members,         setMembers]         = useState([]);
+  const [projects,        setProjects]        = useState([]);
+  const [okrs,            setOkrs]            = useState([]);
+  const [holidays,        setHolidays]        = useState([]);
+  const [vacations,       setVacations]       = useState([]);
+  const [absences,        setAbsences]        = useState([]);
+  const [capacityConfigs, setCapacityConfigs] = useState([]);
 
   // ── Load data from Excel ────────────────────────────────────
   const loadFromFile = useCallback(async (path) => {
@@ -1428,20 +1814,21 @@ export default function App() {
     try {
       const data = await api.loadData(path);
       if (data.error && !data.sprints) {
-        // Hard error (file not found, etc.)
         setLoadError(data.error);
         return;
       }
-      // Soft warning (e.g. no Electron) — still proceed
       if (data.error) setLoadError(data.error);
 
       setSprints(fromExcel.sprints(data.sprints    || []));
       setMembers(fromExcel.members(data.equipe     || []));
       setProjects(fromExcel.projects(data.projetos || [], data.historias || []));
       setOkrs(fromExcel.okrs(data.okrs             || []));
+      setHolidays(fromExcel.holidays(data.feriados              || []));
+      setVacations(fromExcel.vacations(data.ferias             || []));
+      setAbsences(fromExcel.absences(data.ausencias            || []));
+      setCapacityConfigs(fromExcel.capacityConfigs(data.capacidade_config || []));
       setFilePath(path);
       try { localStorage.setItem('cj_filePath', path); } catch {}
-      // Mark as loaded AFTER all state is set (React 18 batches these)
       setDataLoaded(true);
     } catch (err) {
       setLoadError(err.message);
@@ -1467,13 +1854,6 @@ export default function App() {
     }
   }, [filePath]);
 
-  /**
-   * Cada useEffect abaixo dispara quando o dado correspondente muda.
-   * O guard `dataLoaded` impede saves durante o carregamento inicial.
-   * Note: após o carregamento, `dataLoaded` muda para true e estes
-   * effects disparam uma vez com os dados recém-carregados —
-   * esse save redundante é inofensivo (grava o mesmo que foi lido).
-   */
   useEffect(() => {
     if (!dataLoaded || !filePath) return;
     save('Sprints', toExcel.sprints(sprints));
@@ -1494,6 +1874,26 @@ export default function App() {
     if (!dataLoaded || !filePath) return;
     save('OKRs', toExcel.okrs(okrs));
   }, [okrs, dataLoaded]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!dataLoaded || !filePath) return;
+    save('Config_Feriados', toExcel.holidays(holidays));
+  }, [holidays, dataLoaded]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!dataLoaded || !filePath) return;
+    save('Equipe_Ferias', toExcel.vacations(vacations));
+  }, [vacations, dataLoaded]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!dataLoaded || !filePath) return;
+    save('Ausencias', toExcel.absences(absences));
+  }, [absences, dataLoaded]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!dataLoaded || !filePath) return;
+    save('Capacidade_Config', toExcel.capacityConfigs(capacityConfigs));
+  }, [capacityConfigs, dataLoaded]); // eslint-disable-line
 
   // ── File picker handlers ────────────────────────────────────
   const handleOpenFile = async () => {
@@ -1516,6 +1916,10 @@ export default function App() {
     setMembers([]);
     setProjects([]);
     setOkrs([]);
+    setHolidays([]);
+    setVacations([]);
+    setAbsences([]);
+    setCapacityConfigs([]);
     try { localStorage.removeItem('cj_filePath'); } catch {}
   };
 
@@ -1559,15 +1963,15 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  <h1 className="text-base font-bold text-gray-900 leading-tight">Controle de</h1>
-                  <h1 className="text-base font-bold text-indigo-600 leading-tight">Jornada</h1>
+                  <h1 className="text-base font-bold text-gray-900 leading-tight">Manager Team</h1>
+                  <h1 className="text-base font-bold text-indigo-600 leading-tight">QBR</h1>
                 </>
               )}
             </div>
           </div>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1">
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {TABS.map((t) => {
             const active = tab === t.id;
             return (
@@ -1591,7 +1995,7 @@ export default function App() {
           {totalDorIssues > 0 && (
             <div className="bg-red-50 rounded-xl px-3.5 py-2.5 flex items-center gap-2">
               <AlertTriangle size={14} className="text-red-500 shrink-0" />
-              <p className="text-xs text-red-600 font-medium">{totalDorIssues} história(s) sem DoR</p>
+              <p className="text-xs text-red-600 font-medium">{totalDorIssues} item(s) sem DoR</p>
             </div>
           )}
 
@@ -1622,11 +2026,12 @@ export default function App() {
 
       {/* Content */}
       <main className="ml-64 p-8 max-w-[1400px]">
-        {tab === 'dashboard' && <DashboardView sprints={sprints} members={members} projects={projects} />}
-        {tab === 'sprints'   && <SprintsView sprints={sprints} setSprints={setSprints} projects={projects} setProjects={setProjects} members={members} />}
-        {tab === 'team'      && <TeamView members={members} setMembers={setMembers} projects={projects} sprints={sprints} filePath={filePath} />}
+        {tab === 'dashboard' && <DashboardView sprints={sprints} members={members} projects={projects} holidays={holidays} vacations={vacations} absences={absences} capacityConfigs={capacityConfigs} />}
+        {tab === 'sprints'   && <SprintsView sprints={sprints} setSprints={setSprints} projects={projects} setProjects={setProjects} members={members} holidays={holidays} />}
+        {tab === 'team'      && <TeamView members={members} setMembers={setMembers} setProjects={setProjects} projects={projects} sprints={sprints} filePath={filePath} holidays={holidays} vacations={vacations} setVacations={setVacations} absences={absences} setAbsences={setAbsences} capacityConfigs={capacityConfigs} setCapacityConfigs={setCapacityConfigs} />}
         {tab === 'projects'  && <ProjectsView projects={projects} setProjects={setProjects} members={members} sprints={sprints} />}
         {tab === 'okrs'      && <OKRsView okrs={okrs} setOkrs={setOkrs} projects={projects} />}
+        {tab === 'config'    && <ConfigView holidays={holidays} setHolidays={setHolidays} vacations={vacations} setVacations={setVacations} members={members} absences={absences} setAbsences={setAbsences} />}
       </main>
     </div>
   );
