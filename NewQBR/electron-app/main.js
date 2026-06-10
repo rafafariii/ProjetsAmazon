@@ -63,27 +63,62 @@ function readSheet(workbook, sheetName) {
 }
 
 /**
+ * Fila global de escrita — garante que múltiplos saves simultâneos
+ * sejam executados em sequência, evitando race condition onde uma
+ * escrita sobrescreve alterações de outra que terminou antes.
+ */
+let writeQueue = Promise.resolve();
+
+// Mapa de renomeação: novo nome → nome antigo (para migração automática)
+const LEGACY_SHEET_NAMES = {
+  'Backlog':    'Historias',
+  'Feriados':   'Config_Feriados',
+  'Ferias':     'Equipe_Ferias',
+  'Capacidade': 'Capacidade_Config',
+};
+
+/**
  * Abre (ou cria) um workbook, atualiza/insere uma aba e salva.
+ * Quando um nome de aba foi renomeado, remove a aba antiga automaticamente
+ * para evitar que leituras futuras usem dados desatualizados.
  * Preserva todas as outras abas existentes.
+ * Retorna uma Promise para que o IPC handler possa aguardar.
  */
 function writeSheet(filePath, sheetName, data) {
-  let workbook;
+  writeQueue = writeQueue
+    .then(() => {
+      let workbook;
 
-  if (fs.existsSync(filePath)) {
-    workbook = XLSX.readFile(filePath);
-  } else {
-    workbook = XLSX.utils.book_new();
-  }
+      if (fs.existsSync(filePath)) {
+        workbook = XLSX.readFile(filePath);
+      } else {
+        workbook = XLSX.utils.book_new();
+      }
 
-  const ws = XLSX.utils.json_to_sheet(data.length ? data : [{}]);
+      const ws = XLSX.utils.json_to_sheet(data.length ? data : [{}]);
 
-  if (workbook.SheetNames.includes(sheetName)) {
-    workbook.Sheets[sheetName] = ws;
-  } else {
-    XLSX.utils.book_append_sheet(workbook, ws, sheetName);
-  }
+      if (workbook.SheetNames.includes(sheetName)) {
+        workbook.Sheets[sheetName] = ws;
+      } else {
+        XLSX.utils.book_append_sheet(workbook, ws, sheetName);
+      }
 
-  XLSX.writeFile(workbook, filePath);
+      // Migração: remove aba com nome antigo para evitar leitura duplicada
+      const legacyName = LEGACY_SHEET_NAMES[sheetName];
+      if (legacyName && workbook.SheetNames.includes(legacyName)) {
+        delete workbook.Sheets[legacyName];
+        workbook.SheetNames.splice(workbook.SheetNames.indexOf(legacyName), 1);
+        console.log(`[migrate] Aba "${legacyName}" removida → agora usando "${sheetName}"`);
+      }
+
+      XLSX.writeFile(workbook, filePath);
+    })
+    .catch(err => {
+      // Loga o erro mas NÃO re-throw — garante que a fila continue
+      // funcionando para as próximas operações de escrita.
+      console.error(`[writeSheet] Erro ao salvar "${sheetName}":`, err.message);
+    });
+  return writeQueue;
 }
 
 /**
@@ -113,7 +148,7 @@ const DEMO_DATA = {
     { id: 'm3', nome: 'Juliana Mendes', avatar_url: '' },
     { id: 'm4', nome: 'Pedro Costa',    avatar_url: '' },
   ],
-  Capacidade_Config: [
+  Capacidade: [
     // Ana Souza
     { membro_id: 'm1', sprint_id: 'sp1', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
     { membro_id: 'm1', sprint_id: 'sp2', horas_projeto_dia: 6, horas_cerimonias_dia: 2 },
@@ -140,38 +175,44 @@ const DEMO_DATA = {
     { id: 'p2', nome: 'API de Pagamentos', cor: '#f59e0b', data_inicio: '2026-03-23', data_fim: '2026-04-17' },
     { id: 'p3', nome: 'App Mobile',        cor: '#ec4899', data_inicio: '2026-04-06', data_fim: '2026-04-24' },
   ],
-  Historias: [
-    { id: 's1',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm1', titulo: 'Tela de Login OAuth',      descricao: 'Autenticação Google/Microsoft via NextAuth.js.',         estimativa: 16,   tipo: 'historia' },
-    { id: 's2',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Dashboard principal',      descricao: 'KPIs: usuários ativos, conversão e receita.',            estimativa: 24,   tipo: 'historia' },
-    { id: 's3',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Perfil do usuário',        descricao: 'Edição de perfil com upload para S3.',                   estimativa: 12,   tipo: 'historia' },
-    { id: 's4',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm4', titulo: 'Configurações da conta',   descricao: 'Notificações, segurança e integrações.',                  estimativa: 10,   tipo: 'historia' },
-    { id: 's5',  projeto_id: 'p2', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Integração Stripe',        descricao: 'SDK Stripe para pagamentos recorrentes.',                 estimativa: 20,   tipo: 'historia' },
-    { id: 's6',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm1', titulo: 'Webhooks de notificação',  descricao: '',                                                       estimativa: null, tipo: 'task'     },
-    { id: 's7',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Relatório de transações',  descricao: '',                                                       estimativa: null, tipo: 'historia' },
-    { id: 's8',  projeto_id: 'p2', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Estorno e reembolso',      descricao: '',                                                       estimativa: null, tipo: 'historia' },
-    { id: 's9',  projeto_id: 'p3', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Setup React Native + CI',  descricao: '',                                                       estimativa: null, tipo: 'task'     },
-    { id: 's10', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm4', titulo: 'Tela de Onboarding',       descricao: '',                                                       estimativa: null, tipo: 'historia' },
-    { id: 's11', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm2', titulo: 'Push Notifications',       descricao: '',                                                       estimativa: null, tipo: 'historia' },
-    { id: 's12', projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm1', titulo: 'Fix: Crash ao salvar perfil',  descricao: 'Erro de null reference ao salvar sem avatar.',       estimativa: 4,    tipo: 'bug'      },
+  Backlog: [
+    { id: 's1',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm1', titulo: 'Tela de Login OAuth',         descricao: 'Autenticação Google/Microsoft via NextAuth.js.',   estimativa: 16,   story_points: 8,  tipo: 'historia' },
+    { id: 's2',  projeto_id: 'p1', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Dashboard principal',         descricao: 'KPIs: usuários ativos, conversão e receita.',         estimativa: 24,   story_points: 13, tipo: 'historia' },
+    { id: 's3',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Perfil do usuário',           descricao: 'Edição de perfil com upload para S3.',                estimativa: 12,   story_points: 5,  tipo: 'historia' },
+    { id: 's4',  projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm4', titulo: 'Configurações da conta',      descricao: 'Notificações, segurança e integrações.',              estimativa: 10,   story_points: 5,  tipo: 'historia' },
+    { id: 's5',  projeto_id: 'p2', sprint_id: 'sp1', responsavel_id: 'm2', titulo: 'Integração Stripe',           descricao: 'SDK Stripe para pagamentos recorrentes.',             estimativa: 20,   story_points: 13, tipo: 'historia' },
+    { id: 's6',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm1', titulo: 'Webhooks de notificação',     descricao: '',                                                   estimativa: null, story_points: 3,  tipo: 'task'     },
+    { id: 's7',  projeto_id: 'p2', sprint_id: 'sp2', responsavel_id: 'm3', titulo: 'Relatório de transações',     descricao: '',                                                   estimativa: null, story_points: null, tipo: 'historia' },
+    { id: 's8',  projeto_id: 'p2', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Estorno e reembolso',         descricao: '',                                                   estimativa: null, story_points: null, tipo: 'historia' },
+    { id: 's9',  projeto_id: 'p3', sprint_id: 'sp3', responsavel_id: 'm4', titulo: 'Setup React Native + CI',     descricao: '',                                                   estimativa: null, story_points: 2,  tipo: 'task'     },
+    { id: 's10', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm4', titulo: 'Tela de Onboarding',          descricao: '',                                                   estimativa: null, story_points: 8,  tipo: 'historia' },
+    { id: 's11', projeto_id: 'p3', sprint_id: 'sp4', responsavel_id: 'm2', titulo: 'Push Notifications',          descricao: '',                                                   estimativa: null, story_points: 5,  tipo: 'historia' },
+    { id: 's12', projeto_id: 'p1', sprint_id: 'sp2', responsavel_id: 'm1', titulo: 'Fix: Crash ao salvar perfil', descricao: 'Erro de null reference ao salvar sem avatar.',       estimativa: 4,    story_points: 1,  tipo: 'bug'      },
   ],
   OKRs: [
-    { id: 'okr1', tipo: 'KR',  frente: 'modernizacao',   titulo: 'Migração para arquitetura cloud-native',   projeto_id: 'p1', baseline: 0,  moonshot: 80,  roofshot: 100, atual: 35,  unidade: '%',   descricao: 'Percentual de serviços migrados para arquitetura cloud-native' },
-    { id: 'okr2', tipo: 'KPI', frente: 'experiencia',    titulo: 'NPS dos usuários do portal',               projeto_id: 'p1', baseline: 42, moonshot: 65,  roofshot: 75,  atual: 48,  unidade: 'pts', descricao: 'Net Promoter Score mensurado mensalmente' },
-    { id: 'okr3', tipo: 'KR',  frente: 'eficiencia',     titulo: 'Redução do tempo de deploy (minutos)',     projeto_id: 'p2', baseline: 45, moonshot: 15,  roofshot: 10,  atual: 28,  unidade: 'min', lower_is_better: 1, descricao: 'Tempo médio de deploy em produção — quanto menor, melhor' },
-    { id: 'okr4', tipo: 'KPI', frente: 'dados_analytics', titulo: 'Cobertura de dados no Data Warehouse',  projeto_id: 'p2', baseline: 60, moonshot: 85,  roofshot: 95,  atual: 70,  unidade: '%',   lower_is_better: 0, descricao: 'Percentual de domínios de negócio com dados no DW' },
-    { id: 'okr5', tipo: 'KR',  frente: 'atendimento',    titulo: 'Tempo médio de resposta ao cliente (min)', projeto_id: 'p3', baseline: 8,  moonshot: 3,   roofshot: 2,   atual: 5.5, unidade: 'min', lower_is_better: 1, descricao: 'Tempo médio de primeira resposta ao cliente — quanto menor, melhor' },
+    { id: 'okr1', tipo: 'KR',  frente: 'Modernização',      titulo: 'Migração para arquitetura cloud-native',   projeto_id: 'p1', baseline: 0,  moonshot: 80,  roofshot: 100, atual: 35,  unidade: '%',   descricao: 'Percentual de serviços migrados para arquitetura cloud-native' },
+    { id: 'okr2', tipo: 'KPI', frente: 'Experiência',       titulo: 'NPS dos usuários do portal',               projeto_id: 'p1', baseline: 42, moonshot: 65,  roofshot: 75,  atual: 48,  unidade: 'pts', descricao: 'Net Promoter Score mensurado mensalmente' },
+    { id: 'okr3', tipo: 'KR',  frente: 'Eficiência',        titulo: 'Redução do tempo de deploy (minutos)',     projeto_id: 'p2', baseline: 45, moonshot: 15,  roofshot: 10,  atual: 28,  unidade: 'min', lower_is_better: 1, descricao: 'Tempo médio de deploy em produção — quanto menor, melhor' },
+    { id: 'okr4', tipo: 'KPI', frente: 'Dados & Analytics', titulo: 'Cobertura de dados no Data Warehouse',    projeto_id: 'p2', baseline: 60, moonshot: 85,  roofshot: 95,  atual: 70,  unidade: '%',   lower_is_better: 0, descricao: 'Percentual de domínios de negócio com dados no DW' },
+    { id: 'okr5', tipo: 'KR',  frente: 'Atendimento',       titulo: 'Tempo médio de resposta ao cliente (min)', projeto_id: 'p3', baseline: 8,  moonshot: 3,   roofshot: 2,   atual: 5.5, unidade: 'min', lower_is_better: 1, descricao: 'Tempo médio de primeira resposta ao cliente — quanto menor, melhor' },
   ],
-  Config_Feriados: [
+  Feriados: [
     { data: '2026-04-03' },
     { data: '2026-04-21' },
   ],
-  Equipe_Ferias: [
+  Ferias: [
     { membro_id: 'm1', data_inicio: '2026-03-02', data_fim: '2026-03-03' },
     { membro_id: 'm3', data_inicio: '2026-03-16', data_fim: '2026-03-19' },
   ],
   Ausencias: [
     { membro_id: 'm2', data: '2026-03-20', tipo: 'day_off'      },
     { membro_id: 'm4', data: '2026-04-06', tipo: 'treinamento'  },
+  ],
+  Riscos: [
+    { id: 'r1', titulo: 'Dependência da API de pagamentos externa',     categoria: 'dependencia', probabilidade: 'alta',  impacto: 'alto',  status: 'aberto',   responsavel_id: 'm2', descricao: 'A API do Stripe pode sofrer instabilidade durante a integração.', mitigacao: 'Criar fallback para PIX e validar com sandbox antes do deploy.' },
+    { id: 'r2', titulo: 'Atraso na entrega do design system',           categoria: 'negocio',     probabilidade: 'media', impacto: 'medio', status: 'aberto',   responsavel_id: 'm1', descricao: 'Componentes do DS ainda em revisão pelo time de Brand.',           mitigacao: 'Usar componentes provisórios e refatorar após aprovação.' },
+    { id: 'r3', titulo: 'Capacidade reduzida na sprint 3',              categoria: 'operacional', probabilidade: 'alta',  impacto: 'medio', status: 'mitigado', responsavel_id: 'm3', descricao: 'Férias de dois membros coincidem com a sprint.',                   mitigacao: 'Histórias replanejadas para sprint 4 com buffer de 20%.' },
+    { id: 'r4', titulo: 'Risco de regressão no módulo de autenticação', categoria: 'tecnico',     probabilidade: 'baixa', impacto: 'alto',  status: 'aberto',   responsavel_id: 'm4', descricao: 'Mudança de provedor OAuth pode afetar sessões ativas.',           mitigacao: 'Testes de integração obrigatórios antes do merge.' },
   ],
 };
 
@@ -214,16 +255,25 @@ ipcMain.handle('load-data', async (_event, filePath) => {
       return { error: `Arquivo não encontrado: ${filePath}` };
     }
     const workbook = XLSX.readFile(filePath);
+    // Lê com fallback para nomes antigos (compatibilidade retroativa)
+    const readAny = (wb, ...names) => {
+      for (const n of names) {
+        const rows = readSheet(wb, n);
+        if (rows.length > 0) return rows;
+      }
+      return [];
+    };
     return {
-      sprints:           readSheet(workbook, 'Sprints'),
-      equipe:            readSheet(workbook, 'Equipe'),
-      projetos:          readSheet(workbook, 'Projetos'),
-      historias:         readSheet(workbook, 'Historias'),
-      okrs:              readSheet(workbook, 'OKRs'),
-      feriados:          readSheet(workbook, 'Config_Feriados'),
-      ferias:            readSheet(workbook, 'Equipe_Ferias'),
-      ausencias:         readSheet(workbook, 'Ausencias'),
-      capacidade_config: readSheet(workbook, 'Capacidade_Config'),
+      sprints:           readAny(workbook, 'Sprints'),
+      equipe:            readAny(workbook, 'Equipe'),
+      projetos:          readAny(workbook, 'Projetos'),
+      historias:         readAny(workbook, 'Backlog',     'Historias'),
+      okrs:              readAny(workbook, 'OKRs'),
+      feriados:          readAny(workbook, 'Feriados',    'Config_Feriados'),
+      ferias:            readAny(workbook, 'Ferias',      'Equipe_Ferias'),
+      ausencias:         readAny(workbook, 'Ausencias'),
+      capacidade_config: readAny(workbook, 'Capacidade',  'Capacidade_Config'),
+      riscos:            readAny(workbook, 'Riscos'),
     };
   } catch (err) {
     return { error: err.message };
@@ -236,7 +286,7 @@ ipcMain.handle('load-data', async (_event, filePath) => {
  */
 ipcMain.handle('save-sheet', async (_event, filePath, sheetName, data) => {
   try {
-    writeSheet(filePath, sheetName, data);
+    await writeSheet(filePath, sheetName, data);
     return { success: true };
   } catch (err) {
     return { error: err.message };
@@ -286,15 +336,16 @@ ipcMain.handle('create-template', async (_event, filePath, withDemo) => {
     const workbook = XLSX.utils.book_new();
 
     const SCHEMAS = {
-      Sprints:           withDemo ? DEMO_DATA.Sprints           : [{ id: '', nome: '', data_inicio: '', data_fim: '', status: '' }],
-      Equipe:            withDemo ? DEMO_DATA.Equipe            : [{ id: '', nome: '', avatar_url: '' }],
-      Projetos:          withDemo ? DEMO_DATA.Projetos          : [{ id: '', nome: '', cor: '#6366f1', data_inicio: '', data_fim: '' }],
-      Historias:         withDemo ? DEMO_DATA.Historias         : [{ id: '', projeto_id: '', sprint_id: '', responsavel_id: '', titulo: '', descricao: '', estimativa: null, tipo: 'historia' }],
-      OKRs:              withDemo ? DEMO_DATA.OKRs              : [{ id: '', tipo: 'KR', frente: '', titulo: '', projeto_id: '', baseline: 0, moonshot: 0, roofshot: 0, atual: 0, unidade: '%', descricao: '' }],
-      Config_Feriados:   withDemo ? DEMO_DATA.Config_Feriados   : [{ data: '' }],
-      Equipe_Ferias:     withDemo ? DEMO_DATA.Equipe_Ferias     : [{ membro_id: '', data_inicio: '', data_fim: '' }],
-      Ausencias:         withDemo ? DEMO_DATA.Ausencias         : [{ membro_id: '', data: '', tipo: '' }],
-      Capacidade_Config: withDemo ? DEMO_DATA.Capacidade_Config : [{ membro_id: '', sprint_id: '', horas_projeto_dia: 6, horas_cerimonias_dia: 2 }],
+      Sprints:    withDemo ? DEMO_DATA.Sprints    : [{ id: '', nome: '', data_inicio: '', data_fim: '', status: '' }],
+      Equipe:     withDemo ? DEMO_DATA.Equipe     : [{ id: '', nome: '', avatar_url: '' }],
+      Projetos:   withDemo ? DEMO_DATA.Projetos   : [{ id: '', nome: '', cor: '#EC7000', data_inicio: '', data_fim: '' }],
+      Backlog:    withDemo ? DEMO_DATA.Backlog    : [{ id: '', projeto_id: '', sprint_id: '', responsavel_id: '', titulo: '', descricao: '', estimativa: null, story_points: null, tipo: 'historia' }],
+      OKRs:       withDemo ? DEMO_DATA.OKRs       : [{ id: '', tipo: 'KR', frente: '', titulo: '', projeto_id: '', baseline: 0, moonshot: 0, roofshot: 0, atual: 0, unidade: '%', descricao: '' }],
+      Feriados:   withDemo ? DEMO_DATA.Feriados   : [{ data: '' }],
+      Ferias:     withDemo ? DEMO_DATA.Ferias     : [{ membro_id: '', data_inicio: '', data_fim: '' }],
+      Ausencias:  withDemo ? DEMO_DATA.Ausencias  : [{ membro_id: '', data: '', tipo: '' }],
+      Capacidade: withDemo ? DEMO_DATA.Capacidade : [{ membro_id: '', sprint_id: '', horas_projeto_dia: 6, horas_cerimonias_dia: 2 }],
+      Riscos:     withDemo ? DEMO_DATA.Riscos     : [{ id: '', titulo: '', categoria: '', probabilidade: '', impacto: '', status: 'aberto', responsavel_id: '', descricao: '', mitigacao: '' }],
     };
 
     for (const [name, data] of Object.entries(SCHEMAS)) {

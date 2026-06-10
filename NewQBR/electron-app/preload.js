@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /**
    * Lê todas as abas do arquivo Excel e retorna os dados brutos.
    * @param {string} filePath
-   * @returns {Promise<{sprints, equipe, projetos, historias, okrs, feriados, ferias, ausencias}|{error}>}
+   * @returns {Promise<{sprints, equipe, projetos, historias, okrs, feriados, ferias, ausencias, capacidade_config}|{error}>}
    */
   loadData: (filePath) => ipcRenderer.invoke('load-data', filePath),
 

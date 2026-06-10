@@ -19,7 +19,8 @@ import {
   Save, Database, RefreshCw, HardDrive, Upload, UserCircle,
   Target, ArrowRight, Repeat2, MoveRight, Star, Cpu, Smile,
   Activity, PieChart, Headphones, BookOpen, ChevronRight,
-  Settings2, TreePine, CalendarX2, LogOut
+  Settings2, TreePine, CalendarX2, LogOut,
+  ShieldAlert, Unlink, Wrench, CheckCheck
 } from "lucide-react";
 
 // ═══════════════════════════════════════════════════════════════
@@ -30,7 +31,7 @@ const api = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
   : {
       selectFile:     async ()             => null,
-      loadData:       async ()             => ({ sprints: [], equipe: [], projetos: [], historias: [], okrs: [], feriados: [], ferias: [], ausencias: [], error: 'Rodando sem Electron – modo demo' }),
+      loadData:       async ()             => ({ sprints: [], equipe: [], projetos: [], historias: [], okrs: [], feriados: [], ferias: [], ausencias: [], capacidade_config: [], error: 'Rodando sem Electron – modo demo' }),
       saveSheet:      async ()             => ({ success: true }),
       createTemplate: async ()             => ({ success: true }),
       selectAvatar:   async ()             => null,
@@ -46,7 +47,7 @@ function dateDiff(a, b) {
   return Math.max(0, (new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
 }
 
-const AVATAR_PALETTE = ['#6366f1','#ec4899','#14b8a6','#f59e0b','#8b5cf6','#ef4444','#3b82f6','#22c55e'];
+const AVATAR_PALETTE = ['#EC7000','#ec4899','#14b8a6','#f59e0b','#8b5cf6','#ef4444','#3b82f6','#22c55e'];
 const avatarBg = (name) => {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
@@ -70,17 +71,33 @@ const RISK_STYLES = {
 };
 
 const SPRINT_STYLES = {
-  atual:     { badge: 'bg-indigo-100 text-indigo-700', dot: 'bg-indigo-500',  row: 'bg-indigo-50/60 border-indigo-200'  },
+  atual:     { badge: 'bg-orange-100 text-orange-700', dot: 'bg-orange-500',  row: 'bg-orange-50/60 border-orange-200'  },
   encerrada: { badge: 'bg-gray-100 text-gray-500',     dot: 'bg-gray-400',    row: 'bg-gray-50 border-gray-200'          },
-  futura:    { badge: 'bg-violet-100 text-violet-600', dot: 'bg-violet-400',  row: 'bg-violet-50/40 border-violet-200'  },
+  futura:    { badge: 'bg-blue-100 text-blue-600',     dot: 'bg-blue-400',    row: 'bg-blue-50/40 border-blue-200'      },
 };
 
-const FRENTES = ['Engenharia', 'Produto', 'Design', 'Marketing', 'Suporte'];
+const FRENTES = ['Engenharia', 'Produto', 'Design', 'Marketing', 'Suporte', 'Modernização', 'Experiência', 'Eficiência', 'Dados & Analytics', 'Atendimento'];
 
 const ITEM_TYPE_STYLES = {
-  historia: { label: 'História', badge: 'bg-indigo-100 text-indigo-700', dot: 'bg-indigo-500' },
-  task:     { label: 'Task',     badge: 'bg-amber-100 text-amber-700',   dot: 'bg-amber-500'  },
-  bug:      { label: 'Bug',      badge: 'bg-red-100 text-red-600',       dot: 'bg-red-500'    },
+  historia: { label: 'História', badge: 'bg-green-600 text-white',  dot: 'bg-green-600'  },
+  task:     { label: 'Task',     badge: 'bg-blue-600 text-white',   dot: 'bg-blue-600'   },
+  bug:      { label: 'Bug',      badge: 'bg-red-600 text-white',    dot: 'bg-red-600'    },
+};
+
+const RISCO_CATEGORY = {
+  tecnico:     { label: 'Técnico',     color: '#3B82F6', icon: Wrench    },
+  negocio:     { label: 'Negócio',     color: '#F59E0B', icon: BarChart3  },
+  dependencia: { label: 'Dependência', color: '#8B5CF6', icon: Unlink    },
+  operacional: { label: 'Operacional', color: '#14B8A6', icon: Settings2  },
+};
+
+// Matriz de risco: score = prob(1-3) × impact(1-3)
+const RISCO_SCORE = { baixa: 1, media: 2, alta: 3, baixo: 1, medio: 2, alto: 3 };
+const riscoLevel = (prob, impact) => {
+  const s = (RISCO_SCORE[prob] ?? 2) * (RISCO_SCORE[impact] ?? 2);
+  if (s <= 2) return { label: 'Baixo',  cls: 'bg-green-100 text-green-700',  cell: 'bg-green-100'  };
+  if (s <= 4) return { label: 'Médio',  cls: 'bg-amber-100 text-amber-700',  cell: 'bg-amber-100'  };
+  return              { label: 'Alto',   cls: 'bg-red-100 text-red-700',      cell: 'bg-red-100'    };
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -190,7 +207,7 @@ const fromExcel = {
     projRows.filter((r) => r.id).map((r) => ({
       id:        String(r.id),
       name:      r.nome        || '',
-      color:     r.cor         || '#6366f1',
+      color:     r.cor         || '#EC7000',
       startDate: r.data_inicio || '',
       endDate:   r.data_fim    || '',
       stories: storyRows
@@ -203,6 +220,7 @@ const fromExcel = {
           description: s.descricao      || '',
           sprintId:    s.sprint_id      ? String(s.sprint_id)      : '',
           type:        s.tipo           || 'historia',
+          storyPoints: s.story_points != null ? Number(s.story_points) : null,
         })),
     })),
 
@@ -233,6 +251,19 @@ const fromExcel = {
   absences: (rows = []) =>
     rows.filter(r => r.membro_id).map(r => ({
       id: uid(), memberId: String(r.membro_id), date: r.data || '', type: r.tipo || 'day_off'
+    })),
+
+  riscos: (rows = []) =>
+    rows.filter(r => r.id).map(r => ({
+      id:          String(r.id),
+      title:       r.titulo        || '',
+      description: r.descricao     || '',
+      category:    r.categoria     || 'tecnico',
+      probability: r.probabilidade || 'media',
+      impact:      r.impacto       || 'medio',
+      status:      r.status        || 'aberto',
+      mitigation:  r.mitigacao     || '',
+      ownerId:     r.responsavel_id ? String(r.responsavel_id) : '',
     })),
 };
 
@@ -277,6 +308,7 @@ const toExcel = {
         titulo:         s.title,
         descricao:      s.description  || '',
         estimativa:     s.hours        ?? null,
+        story_points:   s.storyPoints  ?? null,
         tipo:           s.type         || 'historia',
       }))
     ),
@@ -301,6 +333,18 @@ const toExcel = {
   vacations: (vacations) => vacations.map(v => ({ membro_id: v.memberId, data_inicio: v.startDate, data_fim: v.endDate })),
 
   absences: (absences) => absences.map(a => ({ membro_id: a.memberId, data: a.date, tipo: a.type })),
+
+  riscos: (riscos) => riscos.map(r => ({
+    id:              r.id,
+    titulo:          r.title,
+    descricao:       r.description  || '',
+    categoria:       r.category,
+    probabilidade:   r.probability,
+    impacto:         r.impact,
+    status:          r.status,
+    mitigacao:       r.mitigation   || '',
+    responsavel_id:  r.ownerId      || '',
+  })),
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -338,7 +382,7 @@ function Avatar({ name, avatarUrl, size = 36, ring = false }) {
   );
 }
 
-function ProgressBar({ value, max, color = '#6366f1', h = 8 }) {
+function ProgressBar({ value, max, color = '#EC7000', h = 8 }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
   return (
     <div className="w-full bg-gray-100 rounded-full overflow-hidden" style={{ height: h }}>
@@ -362,7 +406,7 @@ function Modal({ open, onClose, title, children }) {
   );
 }
 
-const inputCls = 'w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 transition-all';
+const inputCls = 'w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500 transition-all';
 function Input({ label, ...p }) {
   return (
     <div className="mb-4">
@@ -390,9 +434,10 @@ function Sel({ label, children, ...p }) {
 
 function Btn({ children, variant = 'primary', className = '', ...p }) {
   const v = {
-    primary:   'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm focus:ring-indigo-500',
-    secondary: 'bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-400',
-    danger:    'bg-red-50 text-red-600 hover:bg-red-100 focus:ring-red-400',
+    primary:   'bg-orange-600 text-white hover:bg-orange-700 shadow-sm focus:ring-orange-500',
+    secondary: 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100 hover:border-gray-300 focus:ring-gray-400',
+    outline:   'bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100 hover:border-orange-300 focus:ring-orange-400',
+    danger:    'bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 focus:ring-red-400',
     ghost:     'text-gray-500 hover:text-gray-700 hover:bg-gray-50 focus:ring-gray-300',
     success:   'bg-green-600 text-white hover:bg-green-700 shadow-sm focus:ring-green-500',
   }[variant];
@@ -403,7 +448,7 @@ function Btn({ children, variant = 'primary', className = '', ...p }) {
   );
 }
 
-function StatCard({ icon: Icon, label, value, sub, color = '#6366f1' }) {
+function StatCard({ icon: Icon, label, value, sub, color = '#EC7000' }) {
   return (
     <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex items-start gap-4">
       <div className="rounded-xl p-2.5 shrink-0" style={{ backgroundColor: color + '18' }}>
@@ -444,7 +489,7 @@ function GanttTimeline({ projects, members, sprints }) {
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-8">
       <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
-        <BarChart3 size={18} className="text-indigo-600" />
+        <BarChart3 size={18} className="text-orange-600" />
         <h3 className="font-semibold text-gray-900">Linha do Tempo da Release</h3>
         <span className="text-xs text-gray-400 ml-1">— Gantt com alocação de membros</span>
       </div>
@@ -515,7 +560,7 @@ function GanttTimeline({ projects, members, sprints }) {
 // ═══════════════════════════════════════════════════════════════
 // DASHBOARD VIEW
 // ═══════════════════════════════════════════════════════════════
-function DashboardView({ sprints, members, projects, holidays, vacations, absences, capacityConfigs }) {
+function DashboardView({ sprints, members, projects, holidays, vacations, absences, capacityConfigs, riscos }) {
   const currentSprint    = sprints.find(s => s.status === 'atual');
   const totalStories     = projects.reduce((sum, p) => sum + p.stories.length, 0);
   const completedStories = projects.reduce((sum, p) => sum + p.stories.filter(s => s.hours).length, 0);
@@ -539,54 +584,77 @@ function DashboardView({ sprints, members, projects, holidays, vacations, absenc
     });
   }, [members, currentSprint, projects, holidays, vacations, absences, capacityConfigs]);
 
-  const projectsByRisk = useMemo(() => {
-    const g = { green: [], yellow: [], red: [], none: [] };
-    projects.forEach(p => g[dorRisk(p)].push(p));
-    return g;
-  }, [projects]);
+  const riscosAbertos   = (riscos ?? []).filter(r => r.status === 'aberto');
+  const riscosMitigados = (riscos ?? []).filter(r => r.status === 'mitigado');
+  const riscosAltos     = riscosAbertos.filter(r => {
+    const s = RISCO_SCORE[r.probability] * RISCO_SCORE[r.impact];
+    return s >= 6;
+  });
 
   return (
     <div>
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-gray-900">Visão Geral da Release</h2>
-        <p className="text-gray-500 text-sm mt-1">Acompanhe capacidade, risco DoR e progresso geral</p>
+        <p className="text-gray-500 text-sm mt-1">Acompanhe capacidade, riscos e progresso geral</p>
       </div>
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
-        <StatCard icon={Calendar}    label="Sprint Atual"     value={currentSprint?.name ?? '–'}
-          sub={`${sprints.filter(s=>s.status==='encerrada').length}/${sprints.length} encerradas`} color="#6366f1"/>
-        <StatCard icon={Users}       label="Membros"          value={members.length}
-          sub="no time"                                                                            color="#14b8a6"/>
-        <StatCard icon={CheckSquare} label="Histórias em DoR" value={`${completedStories}/${totalStories}`}
-          sub={`${totalStories - completedStories} aguardando`}                                   color="#22c55e"/>
-        <StatCard icon={FolderKanban} label="Projetos"        value={projects.length}
-          sub="na release"                                                                         color="#f59e0b"/>
+        <StatCard icon={Calendar}     label="Sprint Atual"       value={currentSprint?.name ?? '–'}
+          sub={`${sprints.filter(s=>s.status==='encerrada').length}/${sprints.length} encerradas`} color="#EC7000"/>
+        <StatCard icon={Users}        label="Membros"            value={members.length}
+          sub="no time"                                                                             color="#14b8a6"/>
+        <StatCard icon={CheckSquare}  label="Itens com Estimativa" value={`${completedStories}/${totalStories}`}
+          sub={`${totalStories - completedStories} aguardando`}                                    color="#22c55e"/>
+        <StatCard icon={ShieldAlert}  label="Riscos Abertos"     value={riscosAbertos.length}
+          sub={riscosAltos.length > 0 ? `${riscosAltos.length} de alto impacto` : 'nenhum crítico'} color={riscosAltos.length > 0 ? '#ef4444' : '#f59e0b'}/>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-8">
-        {/* Risco DoR */}
+        {/* Riscos resumo */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
           <div className="flex items-center gap-2 mb-4">
-            <Shield size={18} className="text-indigo-600"/>
-            <h3 className="font-semibold text-gray-900">Status de Risco (DoR)</h3>
+            <ShieldAlert size={18} className="text-orange-600"/>
+            <h3 className="font-semibold text-gray-900">Radar de Riscos</h3>
           </div>
-          <div className="space-y-3">
-            {[{key:'green',label:'DoR Completo',color:'#22c55e',bg:'bg-green-50'},
-              {key:'yellow',label:'Risco Médio', color:'#f59e0b',bg:'bg-yellow-50'},
-              {key:'red',   label:'Alto Risco',  color:'#ef4444',bg:'bg-red-50'}].map(r => (
-              <div key={r.key} className={`flex items-center justify-between rounded-xl px-4 py-3 ${r.bg}`}>
-                <span className="text-sm font-medium" style={{color:r.color}}>{r.label}</span>
-                <span className="text-2xl font-bold" style={{color:r.color}}>{projectsByRisk[r.key].length}</span>
-              </div>
-            ))}
-          </div>
+          {(riscos ?? []).length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-4">Nenhum risco cadastrado</p>
+          ) : (
+            <div className="space-y-3">
+              {[
+                { label: 'Alto impacto', count: riscosAltos.length,   color: '#ef4444', bg: 'bg-red-50'   },
+                { label: 'Abertos',      count: riscosAbertos.length,  color: '#f59e0b', bg: 'bg-amber-50' },
+                { label: 'Mitigados',    count: riscosMitigados.length, color: '#22c55e', bg: 'bg-green-50' },
+              ].map(r => (
+                <div key={r.label} className={`flex items-center justify-between rounded-xl px-4 py-3 ${r.bg}`}>
+                  <span className="text-sm font-medium" style={{ color: r.color }}>{r.label}</span>
+                  <span className="text-2xl font-bold" style={{ color: r.color }}>{r.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {riscosAltos.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-gray-100 space-y-1.5">
+              {riscosAltos.slice(0, 3).map(r => {
+                const Icon = RISCO_CATEGORY[r.category]?.icon ?? ShieldAlert;
+                return (
+                  <div key={r.id} className="flex items-center gap-2 text-xs text-gray-600">
+                    <div className="w-5 h-5 rounded flex items-center justify-center shrink-0 text-white"
+                      style={{ backgroundColor: RISCO_CATEGORY[r.category]?.color ?? '#6B7280' }}>
+                      <Icon size={11} />
+                    </div>
+                    <span className="truncate">{r.title}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Capacidade por membro */}
         <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
           <div className="flex items-center gap-2 mb-5">
-            <Zap size={18} className="text-indigo-600"/>
+            <Zap size={18} className="text-orange-600"/>
             <h3 className="font-semibold text-gray-900">
               Capacidade por Membro {currentSprint && `— ${currentSprint.name}`}
             </h3>
@@ -608,7 +676,7 @@ function DashboardView({ sprints, members, projects, holidays, vacations, absenc
                       }
                     </div>
                   </div>
-                  <ProgressBar value={mc.assigned} max={Math.max(mc.capacity, mc.assigned, 1)} color={mc.overload ? '#ef4444' : '#6366f1'} h={6}/>
+                  <ProgressBar value={mc.assigned} max={Math.max(mc.capacity, mc.assigned, 1)} color={mc.overload ? '#ef4444' : '#EC7000'} h={6}/>
                 </div>
               ))}
             </div>
@@ -760,8 +828,10 @@ function SprintsView({ sprints, setSprints, projects, setProjects, members, holi
                               </div>
                               <p className="text-xs text-gray-500">{story.projectName}</p>
                             </div>
-                            <div className="text-right shrink-0">
-                              <p className="text-sm font-semibold text-gray-900">{story.hours || '–'}h</p>
+                            <div className="flex flex-col items-end gap-1 shrink-0">
+                              {story.hours != null && <span className="text-sm font-semibold text-gray-800">{story.hours}h</span>}
+                              {story.storyPoints != null && <span className="text-xs font-semibold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">{story.storyPoints} pts</span>}
+                              {story.hours == null && story.storyPoints == null && <span className="text-sm text-gray-400">–</span>}
                             </div>
                           </div>
                         ))
@@ -801,6 +871,8 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
   // sprintConfigs: { [sprintId]: { projectPerDay, ceremoniesPerDay } }
   const [sprintConfigs, setSprintConfigs] = useState({});
   const [activeSprintTab, setActiveSprintTab] = useState(null);
+  const [expandedSprints, setExpandedSprints] = useState({});
+  const toggleSprintStories = (key) => setExpandedSprints(s => ({ ...s, [key]: !s[key] }));
 
   // ── vacation / absence modals ───────────────────────────────
   const [vacationModal, setVacationModal] = useState(null); // memberId
@@ -928,7 +1000,7 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
         {sprints.length > 0 ? (
           <div className="mb-4">
             <p className="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-2">
-              <Clock size={15} className="text-indigo-600"/>Capacidade por Sprint
+              <Clock size={15} className="text-orange-600"/>Capacidade por Sprint
             </p>
 
             {/* Tabs de sprint */}
@@ -939,7 +1011,7 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
                   <button key={sp.id} onClick={() => setActiveSprintTab(sp.id)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
                       activeSprintTab === sp.id
-                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                        ? 'bg-orange-600 text-white border-orange-600 shadow-sm'
                         : `${st.badge} border-transparent hover:border-gray-300`
                     }`}>
                     {sp.name}
@@ -1021,11 +1093,11 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
                     </div>
                     <div className="flex justify-between py-1 border-b border-gray-200 font-semibold">
                       <span className="text-gray-700">Dias disponíveis</span>
-                      <span className="text-indigo-700">{availDays} dias</span>
+                      <span className="text-orange-700">{availDays} dias</span>
                     </div>
                     <div className="flex justify-between pt-2">
-                      <span className="text-indigo-700 font-semibold">Total Projeto</span>
-                      <span className="font-bold text-indigo-700">{projHours}h</span>
+                      <span className="text-orange-700 font-semibold">Total Projeto</span>
+                      <span className="font-bold text-orange-700">{projHours}h</span>
                     </div>
                     <div className="flex justify-between pb-1">
                       <span className="text-teal-700 font-semibold">Total Cerimônias</span>
@@ -1080,10 +1152,15 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
                       {sprints.map(sp => {
                         const cap = getMemberSprintCapacity(member.id, sp, capacityConfigs, holidays, vacations, absences);
                         const st  = SPRINT_STYLES[sp.status];
-                        const assignedInSprint = projects.reduce((a, p) =>
-                          a + p.stories.filter(s => s.assignee === member.id && s.sprintId === sp.id && s.hours)
-                            .reduce((b, s) => b + s.hours, 0), 0);
+                        const sprintStories = projects.flatMap(p =>
+                          p.stories.filter(s => s.assignee === member.id && s.sprintId === sp.id)
+                            .map(s => ({ ...s, projectName: p.name, projectColor: p.color }))
+                        );
+                        const assignedInSprint = sprintStories.filter(s => s.hours).reduce((a, s) => a + s.hours, 0);
+                        const totalPoints = sprintStories.filter(s => s.storyPoints).reduce((a, s) => a + s.storyPoints, 0);
                         const overload = assignedInSprint > cap.projectHours && cap.projectHours > 0;
+                        const expandKey = `${member.id}_${sp.id}`;
+                        const isExpanded = expandedSprints[expandKey];
                         return (
                           <div key={sp.id} className={`rounded-xl border px-3 py-2.5 ${overload ? 'bg-red-50 border-red-200' : st.row}`}>
                             <div className="flex items-center justify-between mb-1.5">
@@ -1092,7 +1169,10 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
                                 <span className="text-xs font-semibold text-gray-700">{sp.name}</span>
                                 {overload && <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded-md font-semibold">OVERLOAD</span>}
                               </div>
-                              <span className="text-xs font-bold text-indigo-700">{cap.projectHours}h proj · {cap.ceremoniesHours}h cer</span>
+                              <div className="flex items-center gap-2">
+                                {totalPoints > 0 && <span className="text-xs font-semibold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">{totalPoints} pts</span>}
+                                <span className="text-xs font-bold text-orange-700">{cap.projectHours}h proj · {cap.ceremoniesHours}h cer</span>
+                              </div>
                             </div>
                             <p className="text-xs text-gray-500">
                               {cap.availDays}d disponíveis
@@ -1101,7 +1181,36 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
                               <span className="ml-1 text-gray-400">({cap.projectPerDay}h proj/dia · {cap.ceremoniesPerDay}h cer/dia)</span>
                             </p>
                             {assignedInSprint > 0 && (
-                              <ProgressBar value={assignedInSprint} max={Math.max(cap.projectHours, 1)} color={overload ? '#ef4444' : '#6366f1'} h={4} />
+                              <ProgressBar value={assignedInSprint} max={Math.max(cap.projectHours, 1)} color={overload ? '#ef4444' : '#EC7000'} h={4} />
+                            )}
+                            {/* Toggle histórias */}
+                            {sprintStories.length > 0 && (
+                              <>
+                                <button onClick={() => toggleSprintStories(expandKey)}
+                                  className="mt-2 flex items-center gap-1 text-xs text-orange-600 hover:text-orange-800 font-medium w-full">
+                                  {isExpanded ? <ChevronUp size={12}/> : <ChevronDown size={12}/>}
+                                  {sprintStories.length} {sprintStories.length === 1 ? 'item atribuído' : 'itens atribuídos'}
+                                </button>
+                                {isExpanded && (
+                                  <div className="mt-2 space-y-1.5">
+                                    {sprintStories.map(s => (
+                                      <div key={s.id} className="flex items-center gap-2 bg-white rounded-lg px-2.5 py-2 border border-gray-100">
+                                        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.projectColor }}/>
+                                        <span className="text-xs text-gray-700 truncate flex-1">{s.title}</span>
+                                        {s.type && ITEM_TYPE_STYLES[s.type] && (
+                                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium whitespace-nowrap ${ITEM_TYPE_STYLES[s.type].badge}`}>
+                                            {ITEM_TYPE_STYLES[s.type].label}
+                                          </span>
+                                        )}
+                                        <div className="flex items-center gap-1 shrink-0">
+                                          {s.storyPoints != null && <span className="text-xs font-semibold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">{s.storyPoints}pts</span>}
+                                          {s.hours != null && <span className="text-xs text-gray-500">{s.hours}h</span>}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </>
                             )}
                           </div>
                         );
@@ -1117,7 +1226,7 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Férias</p>
                     <button onClick={() => { setVacationModal(member.id); setVacForm({ startDate: '', endDate: '' }); }}
-                      className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ Adicionar</button>
+                      className="text-xs text-orange-600 hover:text-orange-700 font-medium">+ Adicionar</button>
                   </div>
                   {memberVacations.length > 0 ? (
                     <div className="space-y-1.5">
@@ -1138,7 +1247,7 @@ function TeamView({ members, setMembers, setProjects, projects, sprints, filePat
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Ausências Rápidas</p>
                     <button onClick={() => { setAbsenceModal(member.id); setAbsForm({ date: '', type: 'day_off' }); }}
-                      className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ Adicionar</button>
+                      className="text-xs text-orange-600 hover:text-orange-700 font-medium">+ Adicionar</button>
                   </div>
                   {memberAbsences.length > 0 ? (
                     <div className="space-y-1.5">
@@ -1203,8 +1312,8 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
   const [projModal, setProjModal]   = useState(false);
   const [storyModal, setStoryModal] = useState(null);
   const [editProjId, setEditProjId] = useState(null);
-  const [pf, setPf] = useState({ name: '', color: '#6366f1', startDate: '', endDate: '' });
-  const [sf, setSf] = useState({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' });
+  const [pf, setPf] = useState({ name: '', color: '#EC7000', startDate: '', endDate: '' });
+  const [sf, setSf] = useState({ title: '', assignee: '', hours: '', storyPoints: '', description: '', sprintId: '', type: 'historia' });
   const [expandedStories, setExpandedStories] = useState({});
 
   const handleSaveProj = () => {
@@ -1214,7 +1323,7 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
     } else {
       setProjects([...projects, { ...pf, id: uid(), stories: [] }]);
     }
-    setPf({ name: '', color: '#6366f1', startDate: '', endDate: '' });
+    setPf({ name: '', color: '#EC7000', startDate: '', endDate: '' });
     setEditProjId(null);
     setProjModal(false);
   };
@@ -1225,15 +1334,35 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
 
   const handleSaveStory = (projId) => {
     if (!sf.title) return;
-    setProjects(projects.map(p => {
-      if (p.id !== projId) return p;
-      if (storyModal) {
-        return { ...p, stories: p.stories.map(s => s.id === storyModal ? { ...s, title: sf.title, assignee: sf.assignee, hours: sf.hours ? Number(sf.hours) : null, description: sf.description, sprintId: sf.sprintId, type: sf.type } : s) };
+    const isNew = !storyModal || storyModal.startsWith('new:');
+
+    // Segurança: se projId veio undefined, tenta encontrar o projeto pelo id da história
+    const resolvedProjId = projId
+      ?? projects.find(p => p.stories.some(s => s.id === storyModal))?.id;
+
+    if (!resolvedProjId) return; // projeto não encontrado — aborta silenciosamente
+
+    setProjects(prev => prev.map(p => {
+      if (p.id !== resolvedProjId) return p;
+      if (!isNew) {
+        // Editar história existente
+        return {
+          ...p,
+          stories: p.stories.map(s =>
+            s.id === storyModal
+              ? { ...s, title: sf.title, assignee: sf.assignee, hours: sf.hours ? Number(sf.hours) : null, storyPoints: sf.storyPoints ? Number(sf.storyPoints) : null, description: sf.description, sprintId: sf.sprintId, type: sf.type }
+              : s
+          ),
+        };
       } else {
-        return { ...p, stories: [...p.stories, { ...sf, id: uid(), hours: sf.hours ? Number(sf.hours) : null }] };
+        // Adicionar nova história
+        return {
+          ...p,
+          stories: [...p.stories, { id: uid(), title: sf.title, assignee: sf.assignee, hours: sf.hours ? Number(sf.hours) : null, storyPoints: sf.storyPoints ? Number(sf.storyPoints) : null, description: sf.description, sprintId: sf.sprintId, type: sf.type }],
+        };
       }
     }));
-    setSf({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' });
+    setSf({ title: '', assignee: '', hours: '', storyPoints: '', description: '', sprintId: '', type: 'historia' });
     setStoryModal(null);
   };
 
@@ -1245,7 +1374,7 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-900">Projetos</h2>
-        <Btn onClick={() => { setPf({ name: '', color: '#6366f1', startDate: '', endDate: '' }); setEditProjId(null); setProjModal(true); }}>
+        <Btn onClick={() => { setPf({ name: '', color: '#EC7000', startDate: '', endDate: '' }); setEditProjId(null); setProjModal(true); }}>
           <Plus size={16} /> Novo Projeto
         </Btn>
       </div>
@@ -1255,7 +1384,7 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
         <div className="mb-4">
           <label className="block text-sm font-medium text-gray-700 mb-2">Cor</label>
           <div className="flex gap-2 flex-wrap">
-            {['#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#8b5cf6', '#ef4444', '#3b82f6', '#22c55e'].map(c => (
+            {['#EC7000', '#ec4899', '#14b8a6', '#f59e0b', '#8b5cf6', '#ef4444', '#3b82f6', '#22c55e'].map(c => (
               <button key={c} onClick={() => setPf({ ...pf, color: c })} className={`w-8 h-8 rounded-lg border-2 ${pf.color === c ? 'border-gray-900' : 'border-transparent'}`} style={{ backgroundColor: c }} />
             ))}
           </div>
@@ -1274,6 +1403,8 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
           const riskStyle = RISK_STYLES[risk];
           return (
             <div key={proj.id} className={`bg-white rounded-2xl shadow-sm overflow-hidden ${riskStyle.card}`}>
+              {/* Accent bar com cor do projeto */}
+              <div className="h-1 w-full" style={{ backgroundColor: proj.color }} />
               <div className="px-6 py-4 border-b border-gray-100 flex items-start justify-between">
                 <div className="flex items-start gap-4">
                   <div className="w-4 h-4 rounded-lg mt-1" style={{ backgroundColor: proj.color }} />
@@ -1290,16 +1421,50 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
               </div>
 
               <div className="px-6 py-4">
+                {(() => {
+                  const totalH  = proj.stories.reduce((a, s) => a + (s.hours ?? 0), 0);
+                  const totalPts = proj.stories.reduce((a, s) => a + (s.storyPoints ?? 0), 0);
+                  if (!totalH && !totalPts) return null;
+                  return (
+                    <div className="flex items-center gap-3 mb-3 text-xs text-gray-500">
+                      {totalH > 0 && <span className="font-medium text-gray-700">{totalH}h estimadas</span>}
+                      {totalPts > 0 && <span className="font-semibold bg-violet-50 text-violet-600 px-2 py-0.5 rounded-full">{totalPts} pts</span>}
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center justify-between mb-4">
-                  <h4 className="font-medium text-gray-900">Histórias ({proj.stories.length})</h4>
-                  <Btn variant="secondary" size="sm" onClick={() => { setSf({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' }); setStoryModal(null); }} onClick={() => { setSf({ title: '', assignee: '', hours: '', description: '', sprintId: '', type: 'historia' }); setStoryModal('new:' + proj.id); }}>
-                    <Plus size={14} /> Story
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <h4 className="font-medium text-gray-900">Backlog <span className="text-gray-400 font-normal">({proj.stories.length})</span></h4>
+                    {proj.stories.length > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        {[
+                          { type: 'historia', color: 'bg-orange-400' },
+                          { type: 'task',     color: 'bg-amber-400'  },
+                          { type: 'bug',      color: 'bg-red-400'    },
+                        ].map(({ type, color }) => {
+                          const count = proj.stories.filter(s => s.type === type).length;
+                          if (!count) return null;
+                          return (
+                            <span key={type} className="flex items-center gap-1 text-xs text-gray-500">
+                              <span className={`w-1.5 h-1.5 rounded-full ${color}`}/>
+                              {count} {ITEM_TYPE_STYLES[type].label}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <Btn variant="outline" size="sm" onClick={() => { setSf({ title: '', assignee: '', hours: '', storyPoints: '', description: '', sprintId: '', type: 'historia' }); setStoryModal('new:' + proj.id); }}>
+                    <Plus size={14} /> Novo Item
                   </Btn>
                 </div>
 
                 <div className="space-y-2 max-h-64 overflow-y-auto">
                   {proj.stories.map(story => (
-                    <div key={story.id} className="p-3 bg-gray-50 rounded-xl border border-gray-100 flex items-start gap-3 group hover:bg-gray-100/50">
+                    <div key={story.id} className="bg-white rounded-xl border border-gray-100 flex items-stretch overflow-hidden group hover:border-gray-200 hover:shadow-sm transition-all">
+                      {/* Stripe lateral por tipo */}
+                      <div className={`w-1 shrink-0 ${ITEM_TYPE_STYLES[story.type]?.dot || 'bg-gray-300'}`} />
+                      <div className="flex-1 flex items-start gap-3 p-3 min-w-0">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <p className="font-medium text-gray-900 truncate text-sm">{story.title}</p>
@@ -1311,12 +1476,15 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
                         </div>
                         <p className="text-xs text-gray-500">{story.assignee ? members.find(m => m.id === story.assignee)?.name : '–'} • Sprint: {story.sprintId ? sprints.find(s => s.id === story.sprintId)?.name : '–'}</p>
                       </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-sm font-semibold text-gray-900">{story.hours || '–'}h</p>
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        {story.hours != null && <span className="text-sm font-semibold text-gray-800">{story.hours}h</span>}
+                        {story.storyPoints != null && <span className="text-xs font-semibold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">{story.storyPoints} pts</span>}
+                        {story.hours == null && story.storyPoints == null && <span className="text-sm text-gray-400">–</span>}
                       </div>
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => { setSf(story); setStoryModal(story.id); }} className="p-1.5 hover:bg-indigo-50 rounded-lg"><Edit3 size={14} className="text-indigo-600" /></button>
+                        <button onClick={() => { setSf({ ...story, hours: story.hours ?? '', storyPoints: story.storyPoints ?? '' }); setStoryModal(story.id); }} className="p-1.5 hover:bg-orange-50 rounded-lg"><Edit3 size={14} className="text-orange-600" /></button>
                         <button onClick={() => handleDeleteStory(proj.id, story.id)} className="p-1.5 hover:bg-red-50 rounded-lg"><Trash2 size={14} className="text-red-600" /></button>
+                      </div>
                       </div>
                     </div>
                   ))}
@@ -1327,7 +1495,7 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
         })}
       </div>
 
-      <Modal open={storyModal ? true : false} onClose={() => setStoryModal(null)} title={storyModal?.startsWith('new:') ? 'Nova Histórias' : 'Editar Histórias'}>
+      <Modal open={storyModal ? true : false} onClose={() => setStoryModal(null)} title={storyModal?.startsWith('new:') ? 'Novo Item' : 'Editar Item'}>
         {storyModal && (
           <>
             <Input label="Título" value={sf.title} onChange={(e) => setSf({ ...sf, title: e.target.value })} placeholder="ex: Implementar autenticação" />
@@ -1344,7 +1512,16 @@ function ProjectsView({ projects, setProjects, members, sprints }) {
               <option value="">Nenhuma</option>
               {sprints.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </Sel>
-            <Input label="Estimativa (horas)" type="number" value={sf.hours} onChange={(e) => setSf({ ...sf, hours: e.target.value })} min={0} />
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Estimativa (horas)</label>
+                <input type="number" value={sf.hours} onChange={(e) => setSf({ ...sf, hours: e.target.value })} min={0} className={inputCls} placeholder="ex: 8" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Story Points</label>
+                <input type="number" value={sf.storyPoints} onChange={(e) => setSf({ ...sf, storyPoints: e.target.value })} min={0} className={inputCls} placeholder="ex: 5" />
+              </div>
+            </div>
             <Textarea label="Descrição" value={sf.description} onChange={(e) => setSf({ ...sf, description: e.target.value })} placeholder="Detalhes da história..." />
             <div className="flex gap-2">
               <Btn variant="primary" onClick={() => handleSaveStory(storyModal.startsWith('new:') ? storyModal.split(':')[1] : projects.find(p => p.stories.some(s => s.id === storyModal))?.id)}>
@@ -1382,10 +1559,10 @@ function OkrProgressBar({ baseline, moonshot, roofshot, atual, unit, lowerIsBett
           <div className="absolute h-0.5 bg-gray-200" style={{ left: `${baselinePos}%`, right: 0 }} />
         </div>
         <div className="absolute top-1 h-6" style={{ left: `${moonshotPos}%`, transform: 'translateX(-50%)' }}>
-          <div className="w-0.5 h-full bg-indigo-400" />
+          <div className="w-0.5 h-full bg-orange-400" />
         </div>
         <div className="absolute top-1 h-6" style={{ left: `${roofshotPos}%`, transform: 'translateX(-50%)' }}>
-          <div className="w-0.5 h-full bg-indigo-600" />
+          <div className="w-0.5 h-full bg-orange-600" />
         </div>
         <div className="absolute top-1 h-6" style={{ left: `${atualPos}%`, transform: 'translateX(-50%)' }}>
           <div className="w-1 h-full bg-green-500 rounded-full" />
@@ -1408,7 +1585,7 @@ function OkrCard({ okr, projects, onEdit, onDelete }) {
       <div className="flex justify-between items-start mb-3">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1">
-            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${okr.tipo === 'O' ? 'bg-indigo-100 text-indigo-700' : 'bg-purple-100 text-purple-700'}`}>
+            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${okr.tipo === 'O' ? 'bg-orange-100 text-orange-700' : 'bg-purple-100 text-purple-700'}`}>
               {okr.tipo === 'O' ? 'Objetivo' : 'Key Result'}
             </span>
             <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">{okr.frente || '–'}</span>
@@ -1579,7 +1756,7 @@ function ConfigView({ holidays, setHolidays, vacations, setVacations, members, a
     <div className="space-y-6">
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
         <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <CalendarX2 size={18} className="text-indigo-600" />
+          <CalendarX2 size={18} className="text-orange-600" />
           Feriados
         </h3>
         <div className="space-y-4">
@@ -1615,7 +1792,7 @@ function ConfigView({ holidays, setHolidays, vacations, setVacations, members, a
 
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
         <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <TreePine size={18} className="text-indigo-600" />
+          <TreePine size={18} className="text-orange-600" />
           Férias
         </h3>
         <div className="space-y-4">
@@ -1660,11 +1837,11 @@ function ConfigView({ holidays, setHolidays, vacations, setVacations, members, a
 
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
         <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <Clock size={18} className="text-indigo-600" />
+          <Clock size={18} className="text-orange-600" />
           Ausências Rápidas
         </h3>
         <div className="space-y-4">
-          <div className="grid grid-cols-5 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <Sel value={absenceMemberId} onChange={(e) => setAbsenceMemberId(e.target.value)}>
               <option value="">Membro</option>
               {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -1715,12 +1892,14 @@ function ConfigView({ holidays, setHolidays, vacations, setVacations, members, a
 // ═══════════════════════════════════════════════════════════════
 function FilePickerScreen({ onOpenFile, onNewFile, onNewFileWithDemo, error, isElectron, squadName, onSquadNameChange }) {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50/30 to-orange-100/40 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+        <div className="bg-white rounded-3xl shadow-2xl shadow-orange-100 p-8 border border-orange-100">
+          {/* Barra superior laranja Itaú */}
+          <div className="h-1.5 bg-gradient-to-r from-orange-500 to-orange-600 rounded-full mb-8 -mx-8 px-0" style={{marginTop: '-2rem', borderRadius: '1.5rem 1.5rem 0 0'}} />
           <div className="flex justify-center mb-6">
-            <div className="w-16 h-16 bg-indigo-100 rounded-2xl flex items-center justify-center">
-              <FolderKanban size={32} className="text-indigo-600" />
+            <div className="w-16 h-16 bg-gradient-to-br from-orange-500 to-orange-700 rounded-2xl flex items-center justify-center shadow-lg shadow-orange-200">
+              <FolderKanban size={32} className="text-white" />
             </div>
           </div>
           <h1 className="text-2xl font-bold text-gray-900 text-center mb-2">QBR Manager</h1>
@@ -1767,18 +1946,260 @@ function FilePickerScreen({ onOpenFile, onNewFile, onNewFileWithDemo, error, isE
 }
 
 // ═══════════════════════════════════════════════════════════════
+// RISCOS VIEW
+// ═══════════════════════════════════════════════════════════════
+function RiscosView({ riscos, setRiscos, members }) {
+  const [modal, setModal] = useState(null); // null | 'new' | risco.id
+  const [rf, setRf] = useState({ title: '', description: '', category: 'tecnico', probability: 'media', impact: 'medio', status: 'aberto', mitigation: '', ownerId: '' });
+  const [filter, setFilter] = useState('todos'); // todos | aberto | mitigado | fechado
+
+  const openNew  = () => { setRf({ title: '', description: '', category: 'tecnico', probability: 'media', impact: 'medio', status: 'aberto', mitigation: '', ownerId: '' }); setModal('new'); };
+  const openEdit = (r)  => { setRf({ ...r }); setModal(r.id); };
+
+  const handleSave = () => {
+    if (!rf.title) return;
+    if (modal === 'new') {
+      setRiscos(prev => [...prev, { ...rf, id: uid() }]);
+    } else {
+      setRiscos(prev => prev.map(r => r.id === modal ? { ...rf, id: r.id } : r));
+    }
+    setModal(null);
+  };
+
+  const handleDelete = (id) => setRiscos(prev => prev.filter(r => r.id !== id));
+
+  const handleClose  = (id) => setRiscos(prev => prev.map(r => r.id === id ? { ...r, status: 'fechado' } : r));
+  const handleMitigate = (id) => setRiscos(prev => prev.map(r => r.id === id ? { ...r, status: 'mitigado' } : r));
+
+  const visible = riscos.filter(r => filter === 'todos' || r.status === filter);
+
+  // ── Matriz 3×3 ──────────────────────────────────────────────
+  const PROBS   = ['alta', 'media', 'baixa'];
+  const IMPACTS = ['baixo', 'medio', 'alto'];
+  const abertos = riscos.filter(r => r.status === 'aberto');
+
+  const cellRiscos = (prob, impact) => abertos.filter(r => r.probability === prob && r.impact === impact);
+
+  const cellBg = (prob, impact) => {
+    const s = RISCO_SCORE[prob] * RISCO_SCORE[impact];
+    if (s <= 2) return 'bg-green-50 border-green-200';
+    if (s <= 4) return 'bg-amber-50 border-amber-200';
+    return 'bg-red-50 border-red-200';
+  };
+
+  const STATUS_STYLE = {
+    aberto:   { badge: 'bg-red-100 text-red-700',    label: 'Aberto'   },
+    mitigado: { badge: 'bg-amber-100 text-amber-700', label: 'Mitigado' },
+    fechado:  { badge: 'bg-gray-100 text-gray-500',  label: 'Fechado'  },
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Radar de Riscos</h2>
+          <p className="text-sm text-gray-500 mt-1">Mapeie e acompanhe os riscos do projeto por probabilidade e impacto</p>
+        </div>
+        <Btn onClick={openNew}><Plus size={16} /> Novo Risco</Btn>
+      </div>
+
+      {/* ── Matriz 3×3 ── */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
+        <div className="flex items-center gap-2 mb-5">
+          <ShieldAlert size={18} className="text-orange-600" />
+          <h3 className="font-semibold text-gray-900">Matriz de Risco — Riscos Abertos</h3>
+          <span className="text-xs text-gray-400">probabilidade × impacto</span>
+        </div>
+
+        <div className="flex gap-3">
+          {/* Y-axis label */}
+          <div className="flex flex-col items-center justify-center w-6 shrink-0">
+            <span className="text-xs text-gray-400 font-medium" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>PROBABILIDADE ↑</span>
+          </div>
+
+          <div className="flex-1">
+            {/* Matrix grid */}
+            <div className="grid gap-1" style={{ gridTemplateColumns: '80px 1fr 1fr 1fr' }}>
+              {/* Header row */}
+              <div />
+              {IMPACTS.map(imp => (
+                <div key={imp} className="text-center text-xs font-semibold text-gray-500 py-1 capitalize">{imp}</div>
+              ))}
+              {/* Data rows */}
+              {PROBS.map(prob => (
+                <>
+                  <div key={prob + '_label'} className="flex items-center justify-end pr-2">
+                    <span className="text-xs font-semibold text-gray-500 capitalize">{prob}</span>
+                  </div>
+                  {IMPACTS.map(impact => {
+                    const items = cellRiscos(prob, impact);
+                    const cat = RISCO_CATEGORY[items[0]?.category];
+                    return (
+                      <div key={prob + impact} className={`min-h-[72px] rounded-xl border p-2 flex flex-wrap gap-1 content-start ${cellBg(prob, impact)}`}>
+                        {items.map(r => {
+                          const CatIcon = RISCO_CATEGORY[r.category]?.icon ?? ShieldAlert;
+                          return (
+                            <button
+                              key={r.id}
+                              onClick={() => openEdit(r)}
+                              title={r.title}
+                              className="w-7 h-7 rounded-lg flex items-center justify-center hover:scale-110 transition-transform shadow-sm text-white text-xs font-bold"
+                              style={{ backgroundColor: RISCO_CATEGORY[r.category]?.color ?? '#6B7280' }}
+                            >
+                              <CatIcon size={13} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </>
+              ))}
+            </div>
+
+            {/* X-axis label */}
+            <div className="text-center mt-2 text-xs text-gray-400 font-medium tracking-wide">IMPACTO →</div>
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div className="flex flex-wrap gap-4 mt-4 pt-4 border-t border-gray-100 text-xs text-gray-500">
+          <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded bg-green-200"/><span>Baixo risco</span></div>
+          <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded bg-amber-200"/><span>Médio risco</span></div>
+          <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded bg-red-200"/><span>Alto risco</span></div>
+          <div className="ml-auto flex flex-wrap gap-3">
+            {Object.entries(RISCO_CATEGORY).map(([key, v]) => {
+              const Icon = v.icon;
+              return (
+                <div key={key} className="flex items-center gap-1">
+                  <div className="w-5 h-5 rounded flex items-center justify-center" style={{ backgroundColor: v.color }}>
+                    <Icon size={11} className="text-white" />
+                  </div>
+                  <span>{v.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Lista de riscos ── */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900">Todos os Riscos ({riscos.length})</h3>
+          <div className="flex gap-1">
+            {['todos', 'aberto', 'mitigado', 'fechado'].map(s => (
+              <button key={s} onClick={() => setFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all capitalize ${filter === s ? 'bg-orange-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {visible.length === 0 ? (
+          <div className="px-6 py-12 text-center text-gray-400">
+            <ShieldAlert size={32} className="mx-auto mb-3 opacity-30" />
+            <p className="text-sm">Nenhum risco {filter !== 'todos' ? filter : 'cadastrado'}.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {visible.map(r => {
+              const level  = riscoLevel(r.probability, r.impact);
+              const CatIcon = RISCO_CATEGORY[r.category]?.icon ?? ShieldAlert;
+              const owner  = members.find(m => m.id === r.ownerId);
+              const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.aberto;
+              return (
+                <div key={r.id} className="flex items-start gap-4 px-6 py-4 hover:bg-gray-50/50 group">
+                  {/* Category icon */}
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-white"
+                    style={{ backgroundColor: RISCO_CATEGORY[r.category]?.color ?? '#6B7280' }}>
+                    <CatIcon size={16} />
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start gap-2 mb-1 flex-wrap">
+                      <span className="font-semibold text-gray-900 text-sm">{r.title}</span>
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${level.cls}`}>{level.label}</span>
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${st.badge}`}>{st.label}</span>
+                    </div>
+                    {r.description && <p className="text-xs text-gray-500 mb-1 line-clamp-1">{r.description}</p>}
+                    <div className="flex flex-wrap gap-3 text-xs text-gray-400">
+                      <span className="capitalize">{RISCO_CATEGORY[r.category]?.label}</span>
+                      <span>Prob: <strong className="text-gray-600 capitalize">{r.probability}</strong></span>
+                      <span>Impacto: <strong className="text-gray-600 capitalize">{r.impact}</strong></span>
+                      {owner && <span>Responsável: <strong className="text-gray-600">{owner.name}</strong></span>}
+                      {r.mitigation && <span>Mitigação: <em className="text-gray-600">{r.mitigation}</em></span>}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    {r.status === 'aberto' && (
+                      <button onClick={() => handleMitigate(r.id)} title="Marcar como mitigado"
+                        className="p-1.5 hover:bg-amber-50 rounded-lg" ><CheckCheck size={14} className="text-amber-600" /></button>
+                    )}
+                    <button onClick={() => openEdit(r)} className="p-1.5 hover:bg-orange-50 rounded-lg"><Edit3 size={14} className="text-orange-600" /></button>
+                    <button onClick={() => handleDelete(r.id)} className="p-1.5 hover:bg-red-50 rounded-lg"><Trash2 size={14} className="text-red-500" /></button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Modal Novo/Editar Risco ── */}
+      <Modal open={!!modal} onClose={() => setModal(null)} title={modal === 'new' ? 'Novo Risco' : 'Editar Risco'}>
+        <Input label="Título do Risco" value={rf.title} onChange={e => setRf({ ...rf, title: e.target.value })} placeholder="ex: Dependência crítica sem substituto" />
+        <Textarea label="Descrição" value={rf.description} onChange={e => setRf({ ...rf, description: e.target.value })} placeholder="Contexto e detalhes do risco..." />
+        <div className="grid grid-cols-2 gap-3">
+          <Sel label="Categoria" value={rf.category} onChange={e => setRf({ ...rf, category: e.target.value })}>
+            {Object.entries(RISCO_CATEGORY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </Sel>
+          <Sel label="Status" value={rf.status} onChange={e => setRf({ ...rf, status: e.target.value })}>
+            <option value="aberto">Aberto</option>
+            <option value="mitigado">Mitigado</option>
+            <option value="fechado">Fechado</option>
+          </Sel>
+          <Sel label="Probabilidade" value={rf.probability} onChange={e => setRf({ ...rf, probability: e.target.value })}>
+            <option value="baixa">Baixa</option>
+            <option value="media">Média</option>
+            <option value="alta">Alta</option>
+          </Sel>
+          <Sel label="Impacto" value={rf.impact} onChange={e => setRf({ ...rf, impact: e.target.value })}>
+            <option value="baixo">Baixo</option>
+            <option value="medio">Médio</option>
+            <option value="alto">Alto</option>
+          </Sel>
+        </div>
+        <Textarea label="Plano de Mitigação" value={rf.mitigation} onChange={e => setRf({ ...rf, mitigation: e.target.value })} placeholder="Como vai reduzir ou eliminar o risco..." />
+        <Sel label="Responsável" value={rf.ownerId} onChange={e => setRf({ ...rf, ownerId: e.target.value })}>
+          <option value="">Ninguém</option>
+          {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </Sel>
+        <div className="flex gap-2 mt-2">
+          <Btn variant="primary" onClick={handleSave}>Salvar</Btn>
+          <Btn variant="secondary" onClick={() => setModal(null)}>Cancelar</Btn>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════
 // TABS
 // ═══════════════════════════════════════════════════════════════
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'sprints',   label: 'Sprints',   icon: Calendar        },
-  { id: 'team',      label: 'Equipe',    icon: Users           },
-  { id: 'projects',  label: 'Projetos',  icon: FolderKanban    },
-  { id: 'okrs',      label: 'OKRs & KPIs', icon: Target        },
-  { id: 'config',    label: 'Configurações', icon: Settings2    },
+  { id: 'dashboard', label: 'Dashboard',     icon: LayoutDashboard },
+  { id: 'sprints',   label: 'Sprints',       icon: Calendar        },
+  { id: 'team',      label: 'Equipe',        icon: Users           },
+  { id: 'projects',  label: 'Projetos',      icon: FolderKanban    },
+  { id: 'okrs',      label: 'OKRs & KPIs',  icon: Target          },
+  { id: 'riscos',    label: 'Riscos',        icon: ShieldAlert     },
+  { id: 'config',    label: 'Configurações', icon: Settings2       },
 ];
 
 export default function App() {
@@ -1806,10 +2227,16 @@ export default function App() {
   const [vacations,       setVacations]       = useState([]);
   const [absences,        setAbsences]        = useState([]);
   const [capacityConfigs, setCapacityConfigs] = useState([]);
+  const [riscos,          setRiscos]          = useState([]);
+
+  // Ref usado para bloquear auto-save no primeiro render após carregar
+  // (evita que o carregamento acione save desnecessário e crie abas novas)
+  const blockSaveRef = useRef(false);
 
   // ── Load data from Excel ────────────────────────────────────
   const loadFromFile = useCallback(async (path) => {
     setLoadError(null);
+    blockSaveRef.current = true; // bloqueia saves até o efeito rodar
     setDataLoaded(false);
     try {
       const data = await api.loadData(path);
@@ -1827,6 +2254,7 @@ export default function App() {
       setVacations(fromExcel.vacations(data.ferias             || []));
       setAbsences(fromExcel.absences(data.ausencias            || []));
       setCapacityConfigs(fromExcel.capacityConfigs(data.capacidade_config || []));
+      setRiscos(fromExcel.riscos(data.riscos || []));
       setFilePath(path);
       try { localStorage.setItem('cj_filePath', path); } catch {}
       setDataLoaded(true);
@@ -1854,46 +2282,80 @@ export default function App() {
     }
   }, [filePath]);
 
+  // Helper: verifica se pode salvar (bloqueia logo após carregar arquivo)
+  const canSave = () => {
+    if (blockSaveRef.current) { blockSaveRef.current = false; return false; }
+    return true;
+  };
+
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
+    if (!dataLoaded || !filePath || !canSave()) return;
     save('Sprints', toExcel.sprints(sprints));
   }, [sprints, dataLoaded]); // eslint-disable-line
 
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
+    if (!dataLoaded || !filePath || !canSave()) return;
     save('Equipe', toExcel.members(members));
   }, [members, dataLoaded]); // eslint-disable-line
 
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
+    if (!dataLoaded || !filePath || !canSave()) return;
     save('Projetos',  toExcel.projects(projects));
-    save('Historias', toExcel.stories(projects));
+    save('Backlog', toExcel.stories(projects));
   }, [projects, dataLoaded]); // eslint-disable-line
 
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
+    if (!dataLoaded || !filePath || !canSave()) return;
     save('OKRs', toExcel.okrs(okrs));
   }, [okrs, dataLoaded]); // eslint-disable-line
 
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
-    save('Config_Feriados', toExcel.holidays(holidays));
+    if (!dataLoaded || !filePath || !canSave()) return;
+    save('Feriados', toExcel.holidays(holidays));
   }, [holidays, dataLoaded]); // eslint-disable-line
 
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
-    save('Equipe_Ferias', toExcel.vacations(vacations));
+    if (!dataLoaded || !filePath || !canSave()) return;
+    save('Ferias', toExcel.vacations(vacations));
   }, [vacations, dataLoaded]); // eslint-disable-line
 
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
+    if (!dataLoaded || !filePath || !canSave()) return;
     save('Ausencias', toExcel.absences(absences));
   }, [absences, dataLoaded]); // eslint-disable-line
 
   useEffect(() => {
-    if (!dataLoaded || !filePath) return;
-    save('Capacidade_Config', toExcel.capacityConfigs(capacityConfigs));
+    if (!dataLoaded || !filePath || !canSave()) return;
+    save('Capacidade', toExcel.capacityConfigs(capacityConfigs));
   }, [capacityConfigs, dataLoaded]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!dataLoaded || !filePath || !canSave()) return;
+    save('Riscos', toExcel.riscos(riscos));
+  }, [riscos, dataLoaded]); // eslint-disable-line
+
+  // ── Force save all sheets ───────────────────────────────────
+  const saveAll = useCallback(async () => {
+    if (!filePath || !dataLoaded) return;
+    setIsSaving(true);
+    try {
+      await Promise.all([
+        api.saveSheet(filePath, 'Sprints',    toExcel.sprints(sprints)),
+        api.saveSheet(filePath, 'Equipe',     toExcel.members(members)),
+        api.saveSheet(filePath, 'Projetos',   toExcel.projects(projects)),
+        api.saveSheet(filePath, 'Backlog',    toExcel.stories(projects)),
+        api.saveSheet(filePath, 'OKRs',       toExcel.okrs(okrs)),
+        api.saveSheet(filePath, 'Feriados',   toExcel.holidays(holidays)),
+        api.saveSheet(filePath, 'Ferias',     toExcel.vacations(vacations)),
+        api.saveSheet(filePath, 'Ausencias',  toExcel.absences(absences)),
+        api.saveSheet(filePath, 'Capacidade', toExcel.capacityConfigs(capacityConfigs)),
+        api.saveSheet(filePath, 'Riscos',     toExcel.riscos(riscos)),
+      ]);
+      setLastSaved(new Date());
+    } finally {
+      setIsSaving(false);
+    }
+  }, [filePath, dataLoaded, sprints, members, projects, okrs, holidays, vacations, absences, capacityConfigs, riscos]);
 
   // ── File picker handlers ────────────────────────────────────
   const handleOpenFile = async () => {
@@ -1947,24 +2409,26 @@ export default function App() {
 
   // ── Main app ────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/20 font-sans">
+    <div className="min-h-screen bg-gradient-to-br from-orange-50/40 via-white to-amber-50/20 font-sans">
       {/* Sidebar */}
-      <aside className="fixed left-0 top-0 bottom-0 w-64 bg-white/80 backdrop-blur-xl border-r border-gray-100/80 flex flex-col z-40">
+      <aside className="fixed left-0 top-0 bottom-0 w-64 bg-white border-r border-orange-100/60 flex flex-col z-40 shadow-sm">
+        {/* Barra laranja Itaú no topo */}
+        <div className="h-1 bg-gradient-to-r from-orange-500 to-orange-600 w-full" />
         <div className="px-5 py-5 border-b border-gray-100">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-md shadow-indigo-200">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-orange-700 flex items-center justify-center shadow-md shadow-orange-200">
               <Layers size={18} className="text-white" />
             </div>
             <div>
               {squadName ? (
                 <>
                   <h1 className="text-sm font-bold text-gray-900 leading-tight">Squad</h1>
-                  <h1 className="text-sm font-bold text-indigo-600 leading-tight truncate max-w-[140px]" title={squadName}>{squadName}</h1>
+                  <h1 className="text-sm font-bold text-orange-600 leading-tight truncate max-w-[140px]" title={squadName}>{squadName}</h1>
                 </>
               ) : (
                 <>
                   <h1 className="text-base font-bold text-gray-900 leading-tight">Manager Team</h1>
-                  <h1 className="text-base font-bold text-indigo-600 leading-tight">QBR</h1>
+                  <h1 className="text-base font-bold text-orange-600 leading-tight">QBR</h1>
                 </>
               )}
             </div>
@@ -1976,7 +2440,7 @@ export default function App() {
             const active = tab === t.id;
             return (
               <button key={t.id} onClick={() => setTab(t.id)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${active ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'}`}>
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${active ? 'bg-orange-600 text-white shadow-md shadow-orange-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'}`}>
                 <t.icon size={17} />{t.label}
               </button>
             );
@@ -1986,9 +2450,9 @@ export default function App() {
         {/* Footer */}
         <div className="px-4 py-4 border-t border-gray-100 space-y-2">
           {/* Current sprint info */}
-          <div className="bg-indigo-50 rounded-xl p-3.5">
-            <p className="text-xs font-semibold text-indigo-700 mb-0.5">{currentSprint?.name ?? 'Sprint não configurada'}</p>
-            <p className="text-xs text-indigo-500">{currentSprint ? `${fmtDate(currentSprint.startDate)} – ${fmtDate(currentSprint.endDate)}` : 'Configure em Sprints'}</p>
+          <div className="bg-orange-50 rounded-xl p-3.5">
+            <p className="text-xs font-semibold text-orange-700 mb-0.5">{currentSprint?.name ?? 'Sprint não configurada'}</p>
+            <p className="text-xs text-orange-500">{currentSprint ? `${fmtDate(currentSprint.startDate)} – ${fmtDate(currentSprint.endDate)}` : 'Configure em Sprints'}</p>
           </div>
 
           {/* DoR warning */}
@@ -2003,21 +2467,31 @@ export default function App() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs text-gray-400">
               {isSaving
-                ? <><RefreshCw size={11} className="animate-spin text-indigo-400" /> Salvando...</>
+                ? <><RefreshCw size={11} className="animate-spin text-orange-400" /> Salvando...</>
                 : lastSaved
                   ? <><Save size={11} className="text-green-500" /> Salvo {lastSaved.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</>
                   : <><HardDrive size={11} /> Excel pronto</>
               }
             </div>
-            <button onClick={handleDisconnect} title="Trocar arquivo" className="text-gray-300 hover:text-gray-500 transition-colors">
-              <FolderOpen size={14} />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={saveAll}
+                disabled={isSaving}
+                title="Forçar salvamento de todos os dados"
+                className="text-orange-400 hover:text-orange-600 transition-colors disabled:opacity-40"
+              >
+                <Save size={14} />
+              </button>
+              <button onClick={handleDisconnect} title="Trocar arquivo" className="text-gray-300 hover:text-gray-500 transition-colors">
+                <FolderOpen size={14} />
+              </button>
+            </div>
           </div>
 
           {/* Crédito */}
           <div className="pt-3 mt-1 border-t border-gray-100 text-center">
             <p className="text-xs text-gray-400 leading-tight">Desenvolvido por</p>
-            <p className="text-xs font-semibold text-indigo-400 leading-tight mt-0.5">
+            <p className="text-xs font-semibold text-orange-400 leading-tight mt-0.5">
               Rafael de Lima Santos
             </p>
           </div>
@@ -2026,11 +2500,12 @@ export default function App() {
 
       {/* Content */}
       <main className="ml-64 p-8 max-w-[1400px]">
-        {tab === 'dashboard' && <DashboardView sprints={sprints} members={members} projects={projects} holidays={holidays} vacations={vacations} absences={absences} capacityConfigs={capacityConfigs} />}
+        {tab === 'dashboard' && <DashboardView sprints={sprints} members={members} projects={projects} holidays={holidays} vacations={vacations} absences={absences} capacityConfigs={capacityConfigs} riscos={riscos} />}
         {tab === 'sprints'   && <SprintsView sprints={sprints} setSprints={setSprints} projects={projects} setProjects={setProjects} members={members} holidays={holidays} />}
         {tab === 'team'      && <TeamView members={members} setMembers={setMembers} setProjects={setProjects} projects={projects} sprints={sprints} filePath={filePath} holidays={holidays} vacations={vacations} setVacations={setVacations} absences={absences} setAbsences={setAbsences} capacityConfigs={capacityConfigs} setCapacityConfigs={setCapacityConfigs} />}
         {tab === 'projects'  && <ProjectsView projects={projects} setProjects={setProjects} members={members} sprints={sprints} />}
         {tab === 'okrs'      && <OKRsView okrs={okrs} setOkrs={setOkrs} projects={projects} />}
+        {tab === 'riscos'    && <RiscosView riscos={riscos} setRiscos={setRiscos} members={members} />}
         {tab === 'config'    && <ConfigView holidays={holidays} setHolidays={setHolidays} vacations={vacations} setVacations={setVacations} members={members} absences={absences} setAbsences={setAbsences} />}
       </main>
     </div>

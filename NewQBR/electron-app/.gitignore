@@ -1,3 +1,7 @@
+# ══════════════════════════════════════════════════════════════
+# .gitignore — electron-app
+# ══════════════════════════════════════════════════════════════
+
 # ── Dependências ──────────────────────────────────────────────
 node_modules/
 
@@ -29,8 +33,22 @@ app.asar.unpacked/
 .vite/
 *.local
 
-# ── Sistema ───────────────────────────────────────────────────
+# ── Dados gerados em runtime ──────────────────────────────────
+# Arquivos Excel criados/abertos pelo usuário dentro desta pasta
+*.xlsx
+*.xls
+
+# Fotos de avatar copiadas pelo app
+avatars/
+
+# Arquivos de lock do LibreOffice/Excel
+.~lock.*#
+~$*.xlsx
+
+# ── Sistema Operacional ────────────────────────────────────────
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
 desktop.ini
 
