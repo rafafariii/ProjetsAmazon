@@ -1,0 +1,73 @@
+# ══════════════════════════════════════════════════════════════
+# .gitignore — electron-app
+# ══════════════════════════════════════════════════════════════
+
+# ── Dependências ──────────────────────────────────────────────
+node_modules/
+
+# ── Build / Distribuição ──────────────────────────────────────
+dist/
+dist-electron/
+out/
+release/
+build/
+
+# ── Electron Builder output ───────────────────────────────────
+win-unpacked/
+mac/
+linux-unpacked/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.snap
+*.zip
+*.tar.gz
+*.blockmap
+*.nsis.7z
+app.asar
+app.asar.unpacked/
+
+# ── Vite / Dev ────────────────────────────────────────────────
+.vite/
+*.local
+
+# ── Dados gerados em runtime ──────────────────────────────────
+# Arquivos Excel criados/abertos pelo usuário dentro desta pasta
+*.xlsx
+*.xls
+
+# Fotos de avatar copiadas pelo app
+avatars/
+
+# Arquivos de lock do LibreOffice/Excel
+.~lock.*#
+~$*.xlsx
+
+# ── Sistema Operacional ────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Variáveis de ambiente ─────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Editor ────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
